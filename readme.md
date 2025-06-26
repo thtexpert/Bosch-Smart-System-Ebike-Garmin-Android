@@ -1,8 +1,21 @@
-# Bosch eBike Monitor
+# WIP - Bosch eBike Monitor
 
 A simple Android app to connect to Bosch eBikes via Bluetooth Low Energy (BLE) and monitor real-time data including battery level and assist mode.
 
+Creates an android notification that can be pushed to any connected devices like Garmin Smartwatches. 
+
 <img src="images\ebikeMonitorScreenshot.jpg" alt="drawing" width="200"/> <img src="images\FlowScreenshot.jpg" alt="drawing" width="200"/>
+
+
+Created after getting frustrated with Bosches lack of connectivity to other devices.
+
+Others have had the same frustrations!
+https://www.emtbforums.com/threads/project-to-enable-bosch-garmin-integration.37793/
+
+<img src="images\notification.jpg" alt="drawing" width="400"/>
+
+Example notification
+
 
 ## Features
 
