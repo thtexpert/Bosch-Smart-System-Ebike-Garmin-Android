@@ -9,7 +9,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.plowmane.boschebikemonitor"
+        applicationId = "com.RobPlow.BoschEbikeMonitor"
         minSdk = 21
         targetSdk = 36
         versionCode = 1

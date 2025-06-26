@@ -1,12 +1,15 @@
 package com.RobPlow.BoschEbikeMonitor
 
 import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.ParcelUuid
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -21,16 +24,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import java.util.*
 
 class MainActivity : ComponentActivity() {
 
     // Your bike's specific MAC address - UPDATE THIS!
-    private val BOSCH_BIKE_MAC = "00:04:63:82:25:AC"
+    private val BOSCH_BIKE_MAC = "00:11:22:33:44:55" // Replace with your bike's MAC address
 
     // Bosch eBike Service UUIDs
     private val BOSCH_STATUS_SERVICE_UUID = UUID.fromString("00000010-eaa2-11e9-81b4-2a2ae2dbcce4")
     private val BOSCH_STATUS_CHAR_UUID = UUID.fromString("00000011-eaa2-11e9-81b4-2a2ae2dbcce4")
+
+    // Notification
+    private val CHANNEL_ID = "bosch_ebike_notifications"
+    private val NOTIFICATION_ID = 1
 
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private lateinit var bluetoothLeScanner: BluetoothLeScanner
@@ -46,8 +55,11 @@ class MainActivity : ComponentActivity() {
 
     // Live bike status
     private var currentAssistMode by mutableStateOf("Unknown")
-    private var currentBattery1 by mutableStateOf("Unknown")
-    private var currentBattery2 by mutableStateOf("Unknown")
+    private var currentBattery by mutableStateOf("Unknown")
+
+    // Previous values for change detection
+    private var previousBattery = ""
+    private var previousAssistMode = ""
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -55,6 +67,7 @@ class MainActivity : ComponentActivity() {
         val allGranted = permissions.values.all { it }
         if (allGranted) {
             initializeBluetooth()
+            createNotificationChannel()
         }
     }
 
@@ -196,13 +209,7 @@ class MainActivity : ComponentActivity() {
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Text(
-                            text = "🔋 Battery 1: $currentBattery1",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        Text(
-                            text = "🔋 Battery 2: $currentBattery2",
+                            text = "🔋 Battery: $currentBattery",
                             style = MaterialTheme.typography.titleMedium
                         )
                     }
@@ -326,7 +333,8 @@ class MainActivity : ComponentActivity() {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.POST_NOTIFICATIONS
             )
         } else {
             arrayOf(
@@ -342,6 +350,46 @@ class MainActivity : ComponentActivity() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
         bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
+    }
+
+    private fun createNotificationChannel() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val name = "Bosch eBike Status"
+                val descriptionText = "Battery and assist mode updates from your eBike"
+                val importance = NotificationManager.IMPORTANCE_DEFAULT
+                val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
+                    description = descriptionText
+                }
+
+                val notificationManager: NotificationManager =
+                    getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                notificationManager.createNotificationChannel(channel)
+            }
+        } catch (e: Exception) {
+            Log.e("NOTIFICATION", "Failed to create notification channel: ${e.message}")
+        }
+    }
+
+    private fun sendBatteryNotification(message: String) {
+        try {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+
+                val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+                    .setSmallIcon(android.R.drawable.ic_dialog_info) // Different system icon
+                    .setContentTitle("🚴 Bosch eBike")
+                    .setContentText(message)
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .setAutoCancel(true)
+
+                with(NotificationManagerCompat.from(this)) {
+                    notify(NOTIFICATION_ID, builder.build())
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("NOTIFICATION", "Failed to send notification: ${e.message}")
+        }
     }
 
     private fun connectToBoschBike() {
@@ -454,8 +502,7 @@ class MainActivity : ComponentActivity() {
                         rawHexData = "No data"
                         // Reset live status
                         currentAssistMode = "Unknown"
-                        currentBattery1 = "Unknown"
-                        currentBattery2 = "Unknown"
+                        currentBattery = "Unknown"
                     }
                     BluetoothProfile.STATE_CONNECTING -> {
                         connectionStatus = "Connecting..."
@@ -568,39 +615,49 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun findBoschBattery(bytes: List<Int>): String {
-        // Look for battery patterns:
-        // 30-04-80-88-08-XX (XX = battery value)
-        // 30-04-80-BC-08-XX (XX = battery percentage)
-
-        var batteryInfo = ""
+        // Look for battery pattern: 30-04-80-88-08-XX (where XX is battery value)
+        // Handle multiple concatenated messages in one packet
 
         for (i in 0..bytes.size - 6) {
             val pattern = bytes.subList(i, i + 5)
-            when {
-                pattern == listOf(0x30, 0x04, 0x80, 0x88, 0x08) -> {
-                    val batteryValue = bytes[i + 5]
-                    currentBattery1 = "$batteryValue"
-                    batteryInfo += "🔋 Battery 1: $batteryValue (raw value) at position $i\n"
+            if (pattern == listOf(0x30, 0x04, 0x80, 0x88, 0x08)) {
+                val batteryValue = bytes[i + 5]
+                val newBattery = "$batteryValue"
+
+                Log.d("BLE_BATTERY", "Found battery pattern at position $i, value: $batteryValue (0x${"%02X".format(batteryValue)})")
+
+                if (newBattery != previousBattery && previousBattery.isNotEmpty()) {
+                    sendBatteryNotification("🔋 Battery: $batteryValue")
                 }
-                pattern == listOf(0x30, 0x04, 0x80, 0xBC, 0x08) -> {
-                    val batteryPercent = bytes[i + 5]
-                    currentBattery2 = "$batteryPercent%"
-                    batteryInfo += "🔋 Battery 2: $batteryPercent% at position $i\n"
-                }
+                previousBattery = newBattery
+                currentBattery = newBattery
+                return "🔋 Battery: $batteryValue at position $i"
             }
         }
 
-        return if (batteryInfo.isNotEmpty()) batteryInfo.trimEnd() else "🔋 Battery: Pattern not found"
+        // Debug: Log the full packet for troubleshooting
+        val hexString = bytes.joinToString("-") { "%02X".format(it) }
+        Log.d("BLE_BATTERY", "No battery pattern found in: $hexString")
+
+        return "🔋 Battery: Pattern not found"
     }
 
     private fun findBoschAssist(bytes: List<Int>): String {
-        // Look for assist pattern: 30-04-98-09-08-XX (XX = assist mode)
+        // Look for assist pattern: 30-04-98-09-08-08-XX
 
         for (i in 0..bytes.size - 6) {
             val pattern = bytes.subList(i, i + 5)
             if (pattern == listOf(0x30, 0x04, 0x98, 0x09, 0x08)) {
-                val assistMode = bytes[i + 5]
-                currentAssistMode = "$assistMode"
+                val assistMode = bytes[i + 5] // Try the 6th byte
+                val newAssistMode = "$assistMode"
+                Log.d("BLE_ASSIST", "Found assist pattern at position $i, value: $assistMode")
+
+                // TO TEST IF NOTIFICATIONS WORK
+                //if (newAssistMode != previousAssistMode && previousAssistMode.isNotEmpty()) {
+                //    sendBatteryNotification("⚡ Assist Mode: $assistMode")
+                //}
+                previousAssistMode = newAssistMode
+                currentAssistMode = newAssistMode
                 return "⚡ Assist Mode: $assistMode at position $i"
             }
         }
