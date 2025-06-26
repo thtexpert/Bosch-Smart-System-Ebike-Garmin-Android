@@ -1,7 +1,8 @@
 # Bosch eBike Monitor
 
 A simple Android app to connect to Bosch eBikes via Bluetooth Low Energy (BLE) and monitor real-time data including battery level and assist mode.
-<img src="images\ebikeMonitorScreenshot.jpg" alt="drawing" width="400"/> <img src="images\FlowScreenshot.jpg" alt="drawing" width="400"/>
+
+<img src="images\ebikeMonitorScreenshot.jpg" alt="drawing" width="200"/> <img src="images\FlowScreenshot.jpg" alt="drawing" width="200"/>
 
 ## Features
 
