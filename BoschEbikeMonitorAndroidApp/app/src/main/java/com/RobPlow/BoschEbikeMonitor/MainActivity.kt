@@ -28,10 +28,26 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import java.util.*
 
+data class BoschMessage(
+    val messageId: Int,
+    val messageType: Int,
+    val value: Int,
+    val rawBytes: List<Int>
+)
+
+data class BikeStatus(
+    var cadence: Int = 0,
+    var humanPower: Int = 0,
+    var motorPower: Int = 0,
+    var speed: Double = 0.0,
+    var battery: Int = 0,
+    var assistMode: Int = 0,
+)
+
 class MainActivity : ComponentActivity() {
 
     // Your bike's specific MAC address - UPDATE THIS!
-    private val BOSCH_BIKE_MAC = "00:11:22:33:44:55" // Replace with your bike's MAC address
+    private val BOSCH_BIKE_MAC = "00:04:63:A0:F8:AC" // Replace with your bike's MAC address
 
     // Bosch eBike Service UUIDs
     private val BOSCH_STATUS_SERVICE_UUID = UUID.fromString("00000010-eaa2-11e9-81b4-2a2ae2dbcce4")
@@ -54,12 +70,11 @@ class MainActivity : ComponentActivity() {
     private val dataLog = mutableStateListOf<String>()
 
     // Live bike status
-    private var currentAssistMode by mutableStateOf("Unknown")
-    private var currentBattery by mutableStateOf("Unknown")
+    private var bikeStatus by mutableStateOf(BikeStatus())
 
     // Previous values for change detection
-    private var previousBattery = ""
-    private var previousAssistMode = ""
+    private var previousBattery = 0
+    private var previousAssistMode = 0
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -186,7 +201,7 @@ class MainActivity : ComponentActivity() {
 
             // Bike Data Display
             if (connectionStatus == "Connected") {
-                // Live Status Card - Always at top
+                // Live Status Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -202,16 +217,21 @@ class MainActivity : ComponentActivity() {
                         )
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        Text(
-                            text = "⚡ Assist Mode: $currentAssistMode",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = "🔋 Battery: $currentBattery",
-                            style = MaterialTheme.typography.titleMedium
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("🔋 Battery: ${bikeStatus.battery}%", style = MaterialTheme.typography.titleMedium)
+                                Text("⚡ Assist: ${getAssistModeName(bikeStatus.assistMode)}", style = MaterialTheme.typography.titleMedium)
+                                Text("🦵 Human: ${bikeStatus.humanPower}W", style = MaterialTheme.typography.bodyMedium)
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("🚀 Speed: ${String.format("%.1f", bikeStatus.speed)} km/h", style = MaterialTheme.typography.titleMedium)
+                                Text("🏃 Cadence: ${bikeStatus.cadence} RPM", style = MaterialTheme.typography.bodyMedium)
+                                Text("⚙️ Motor: ${bikeStatus.motorPower}W", style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
                     }
                 }
 
@@ -328,6 +348,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun getAssistModeName(mode: Int): String {
+        return when (mode) {
+            0 -> "Off"
+            1 -> "Eco"
+            2 -> "Tour"
+            3 -> "Sport"
+            4 -> "Turbo"
+            else -> "Mode $mode"
+        }
+    }
+
     private fun requestBluetoothPermissions() {
         val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
@@ -377,7 +408,7 @@ class MainActivity : ComponentActivity() {
                 == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
 
                 val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setSmallIcon(android.R.drawable.ic_dialog_info) // Different system icon
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
                     .setContentTitle("🚴 Bosch eBike")
                     .setContentText(message)
                     .setPriority(NotificationCompat.PRIORITY_DEFAULT)
@@ -501,8 +532,7 @@ class MainActivity : ComponentActivity() {
                         bikeData = "No data"
                         rawHexData = "No data"
                         // Reset live status
-                        currentAssistMode = "Unknown"
-                        currentBattery = "Unknown"
+                        bikeStatus = BikeStatus()
                     }
                     BluetoothProfile.STATE_CONNECTING -> {
                         connectionStatus = "Connecting..."
@@ -543,11 +573,15 @@ class MainActivity : ComponentActivity() {
 
                 runOnUiThread {
                     rawHexData = hexString
-                    bikeData = parseBoschData(data)
+
+                    // Parse the concatenated messages
+                    val messages = parseBoschPacket(data.map { it.toInt() and 0xFF })
+                    val parsedData = processParsedMessages(messages)
+                    bikeData = parsedData
 
                     // Add to log with timestamp
                     val logEntry = "$timestamp [${data.size}b]: $hexString"
-                    dataLog.add(0, logEntry) // Add to beginning
+                    dataLog.add(0, logEntry)
 
                     // Keep only last 50 entries
                     if (dataLog.size > 50) {
@@ -560,119 +594,244 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun parseBoschData(data: ByteArray): String {
-        return when (data.size) {
-            6 -> parseShortPacket(data, "6-byte (likely speed/power)")
-            7 -> parseShortPacket(data, "7-byte (likely speed/power+)")
-            in 20..35 -> parseLongPacket(data, "Long packet (likely full status)")
-            else -> parseGenericPacket(data)
+/**
+ * Corrected Bosch packet parsing functions
+ */
+
+/**
+ * Decode a varint from the byte array starting at the given index
+ * Returns Pair(decoded value, number of bytes consumed)
+ */
+private fun decodeVarint(bytes: List<Int>, startIndex: Int): Pair<Int, Int> {
+    if (startIndex >= bytes.size) return Pair(0, 0)
+
+    var result = 0
+    var shift = 0
+    var currentIndex = startIndex
+    var bytesConsumed = 0
+
+    try {
+        while (currentIndex < bytes.size && bytesConsumed < 5) {
+            val byte = bytes[currentIndex]
+            result = result or ((byte and 0x7F) shl shift)
+            bytesConsumed++
+            currentIndex++
+
+            // If MSB is 0, this is the last byte
+            if ((byte and 0x80) == 0) {
+                break
+            }
+            shift += 7
         }
+    } catch (e: Exception) {
+        Log.e("VARINT", "Error decoding varint: ${e.message}")
+        return Pair(0, 1)
     }
 
-    private fun parseShortPacket(data: ByteArray, type: String): String {
-        val bytes = data.map { it.toInt() and 0xFF }
-        val hexString = bytes.joinToString("-") { "%02X".format(it) }
+    return Pair(result, bytesConsumed)
+}
 
-        // Check for assist mode in short packets too
-        val assistInfo = findBoschAssist(bytes)
+/**
+ * Parse a complete BLE packet that may contain multiple concatenated messages
+ */
+private fun parseBoschPacket(bytes: List<Int>): List<BoschMessage> {
+    val messages = mutableListOf<BoschMessage>()
+    var index = 0
 
-        // Try to identify speed (often 2 bytes combined)
-        val possibleSpeed1 = if (bytes.size >= 2) (bytes[0] shl 8) + bytes[1] else 0 // Big endian
-        val possibleSpeed2 = if (bytes.size >= 2) (bytes[1] shl 8) + bytes[0] else 0 // Little endian
-        val possibleSpeed3 = if (bytes.size >= 4) (bytes[2] shl 8) + bytes[3] else 0
+    Log.d("PARSER", "Parsing packet: ${bytes.joinToString("-") { "%02X".format(it) }}")
 
-        return """
-            $type:
-            Raw: $hexString
-            $assistInfo
+    try {
+        while (index < bytes.size) {
+            // Look for message start (0x30)
+            if (bytes[index] != 0x30) {
+                index++
+                continue
+            }
+
+            // Check if we have enough bytes for a basic message header
+            if (index + 2 >= bytes.size) break
+
+            val messageLength = bytes[index + 1]
+            Log.d("PARSER", "Found message start at index $index, length: $messageLength")
+
+            // The message length appears to be the payload size, not including start byte and length byte
+            // So total message size is messageLength + 2
+            val totalMessageSize = messageLength + 2
             
-            Possible speeds (km/h):
-            • B0+B1 (BE): ${possibleSpeed1 / 10.0}
-            • B0+B1 (LE): ${possibleSpeed2 / 10.0}
-            ${if (bytes.size >= 4) "• B2+B3 (BE): ${possibleSpeed3 / 10.0}" else ""}
+            // Validate message length is reasonable (between 2 and 50)
+            if (messageLength < 2 || messageLength > 50) {
+                Log.w("PARSER", "Invalid message length: $messageLength")
+                index++
+                continue
+            }
+
+            // Check if we have enough bytes for the complete message
+            if (index + totalMessageSize > bytes.size) {
+                Log.w("PARSER", "Not enough bytes for complete message (need ${totalMessageSize}, have ${bytes.size - index})")
+                break
+            }
+
+            // Extract the message ID (2 bytes after start and length)
+            if (index + 4 >= bytes.size) break
             
-            All bytes: ${bytes.mapIndexed { i, b -> "B$i=0x%02X(%d)".format(b, b) }.joinToString(", ")}
-        """.trimIndent()
-    }
+            val messageId = (bytes[index + 2] shl 8) or bytes[index + 3]
+            Log.d("PARSER", "Message ID: 0x${messageId.toString(16).uppercase()}")
 
-    private fun parseLongPacket(data: ByteArray, type: String): String {
-        val bytes = data.map { it.toInt() and 0xFF }
-        val hexString = bytes.joinToString("-") { "%02X".format(it) }
-
-        // Look for Bosch battery patterns
-        val batteryInfo = findBoschBattery(bytes)
-        val assistInfo = findBoschAssist(bytes)
-
-        return """
-            $type (${data.size} bytes):
-            Raw: ${hexString.take(50)}${if (hexString.length > 50) "..." else ""}
+            // Get all message bytes including the extra data
+            val messageBytes = bytes.subList(index, minOf(index + totalMessageSize, bytes.size))
+            Log.d("PARSER", "Message bytes: ${messageBytes.joinToString("-") { "%02X".format(it) }}")
             
-            ${batteryInfo}
-            ${assistInfo}
+            // Determine if there's a data type byte and data
+            var dataValue = 0
+            var dataType = 0
             
-            First 8 bytes: ${bytes.take(8).mapIndexed { i, b -> "B$i=0x%02X(%d)".format(b, b) }.joinToString(", ")}
-        """.trimIndent()
-    }
-
-    private fun findBoschBattery(bytes: List<Int>): String {
-        // Look for battery pattern: 30-04-80-88-08-XX (where XX is battery value)
-        // Handle multiple concatenated messages in one packet
-
-        for (i in 0..bytes.size - 6) {
-            val pattern = bytes.subList(i, i + 5)
-            if (pattern == listOf(0x30, 0x04, 0x80, 0x88, 0x08)) {
-                val batteryValue = bytes[i + 5]
-                val newBattery = "$batteryValue"
-
-                Log.d("BLE_BATTERY", "Found battery pattern at position $i, value: $batteryValue (0x${"%02X".format(batteryValue)})")
-
-                if (newBattery != previousBattery && previousBattery.isNotEmpty()) {
-                    sendBatteryNotification("🔋 Battery: $batteryValue")
+            if (messageLength == 2) {
+                // Just message ID, no data - this means value is 0
+                dataValue = 0
+                Log.d("PARSER", "No data bytes - value is 0")
+            } else if (messageLength > 2) {
+                // We have data beyond the message ID
+                val dataTypeIndex = 4  // Position after start(1) + length(1) + messageId(2)
+                val dataStartIndex = 5  // Position after data type byte
+                
+                if (dataTypeIndex < messageBytes.size) {
+                    dataType = messageBytes[dataTypeIndex]
+                    Log.d("PARSER", "Data type: 0x${dataType.toString(16).uppercase()}")
+                    
+                    when (dataType) {
+                        0x08 -> {
+                            // Varint encoded data
+                            if (dataStartIndex < messageBytes.size) {
+                                val dataBytes = messageBytes.subList(dataStartIndex, messageBytes.size)
+                                val (value, consumed) = decodeVarint(dataBytes, 0)
+                                dataValue = value
+                                Log.d("PARSER", "Decoded varint value: $dataValue (consumed $consumed bytes)")
+                            }
+                        }
+                        0x0A -> {
+                            // Different encoding type - try as raw bytes
+                            if (dataStartIndex < messageBytes.size) {
+                                dataValue = messageBytes[dataStartIndex]
+                                Log.d("PARSER", "Using first data byte for 0x0A: $dataValue")
+                            }
+                        }
+                        else -> {
+                            // Unknown data type - try to parse as single byte or simple value
+                            if (dataStartIndex < messageBytes.size) {
+                                dataValue = messageBytes[dataStartIndex]
+                                Log.d("PARSER", "Using first data byte for unknown type 0x${dataType.toString(16)}: $dataValue")
+                            }
+                        }
+                    }
+                } else {
+                    Log.w("PARSER", "Expected data type byte but message too short")
                 }
-                previousBattery = newBattery
-                currentBattery = newBattery
-                return "🔋 Battery: $batteryValue at position $i"
+            }
+
+            val message = BoschMessage(
+                messageId = messageId,
+                messageType = dataType,
+                value = dataValue,
+                rawBytes = messageBytes
+            )
+
+            messages.add(message)
+            Log.d("PARSER", "Created message: ID=0x${messageId.toString(16)}, value=$dataValue")
+
+            // Move to next message using the total message size
+            index += totalMessageSize
+        }
+    } catch (e: Exception) {
+        Log.e("PARSER", "Error parsing packet: ${e.message}")
+        return messages
+    }
+
+    Log.d("PARSER", "Parsed ${messages.size} messages")
+    return messages
+}
+
+/**
+ * Process parsed messages and update bike status
+ */
+private fun processParsedMessages(messages: List<BoschMessage>): String {
+    if (messages.isEmpty()) return "No messages to parse"
+
+    val parsedInfo = mutableListOf<String>()
+    Log.d("PROCESSOR", "Processing ${messages.size} messages")
+
+    try {
+        for (message in messages) {
+            Log.d("PROCESSOR", "Processing message ID: 0x${message.messageId.toString(16).uppercase()}, value: ${message.value}")
+            
+            when (message.messageId) {
+                0x985A -> {
+                    // Cadence - divide by 2
+                    val cadence = maxOf(0, message.value / 2)
+                    bikeStatus = bikeStatus.copy(cadence = cadence)
+                    parsedInfo.add("🏃 Cadence: $cadence RPM")
+                    Log.d("PROCESSOR", "Updated cadence: $cadence")
+                }
+                0x985B -> {
+                    // Human Power - use value directly
+                    val power = maxOf(0, message.value)
+                    bikeStatus = bikeStatus.copy(humanPower = power)
+                    parsedInfo.add("🦵 Human Power: ${power}W")
+                    Log.d("PROCESSOR", "Updated human power: $power")
+                }
+                0x985D -> {
+                    // Motor Power
+                    val power = maxOf(0, message.value)
+                    bikeStatus = bikeStatus.copy(motorPower = power)
+                    parsedInfo.add("⚙️ Motor Power: ${power}W")
+                    Log.d("PROCESSOR", "Updated motor power: $power")
+                }
+                0x982D -> {
+                    // Speed - divide by 100 for km/h
+                    val speed = maxOf(0.0, message.value / 100.0)
+                    bikeStatus = bikeStatus.copy(speed = speed)
+                    parsedInfo.add("🚀 Speed: ${String.format("%.1f", speed)} km/h")
+                    Log.d("PROCESSOR", "Updated speed: $speed")
+                }
+                0x8088 -> {
+                    // Battery percentage
+                    val newBattery = message.value.coerceIn(0, 100)
+                    if (newBattery != previousBattery && previousBattery != 0) {
+                        sendBatteryNotification("🔋 Battery: $newBattery%")
+                    }
+                    previousBattery = newBattery
+                    bikeStatus = bikeStatus.copy(battery = newBattery)
+                    parsedInfo.add("🔋 Battery: ${newBattery}%")
+                    Log.d("PROCESSOR", "Updated battery: $newBattery")
+                }
+                0x9809 -> {
+                    // Assist Mode - use value directly
+                    val newAssistMode = message.value.coerceIn(0, 10)
+                    if (newAssistMode != previousAssistMode && previousAssistMode != 0) {
+                        sendBatteryNotification("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
+                    }
+                    previousAssistMode = newAssistMode
+                    bikeStatus = bikeStatus.copy(assistMode = newAssistMode)
+                    parsedInfo.add("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
+                    Log.d("PROCESSOR", "Updated assist mode: $newAssistMode")
+                }
+                else -> {
+                    // Unknown message ID
+                    parsedInfo.add("❓ Unknown ID 0x${message.messageId.toString(16).uppercase()}: ${message.value}")
+                    Log.d("PROCESSOR", "Unknown message ID: 0x${message.messageId.toString(16).uppercase()}")
+                }
             }
         }
-
-        // Debug: Log the full packet for troubleshooting
-        val hexString = bytes.joinToString("-") { "%02X".format(it) }
-        Log.d("BLE_BATTERY", "No battery pattern found in: $hexString")
-
-        return "🔋 Battery: Pattern not found"
+    } catch (e: Exception) {
+        Log.e("PROCESSOR", "Error processing messages: ${e.message}")
+        return "Error processing messages: ${messages.size} found"
     }
 
-    private fun findBoschAssist(bytes: List<Int>): String {
-        // Look for assist pattern: 30-04-98-09-08-08-XX
-
-        for (i in 0..bytes.size - 6) {
-            val pattern = bytes.subList(i, i + 5)
-            if (pattern == listOf(0x30, 0x04, 0x98, 0x09, 0x08)) {
-                val assistMode = bytes[i + 5] // Try the 6th byte
-                val newAssistMode = "$assistMode"
-                Log.d("BLE_ASSIST", "Found assist pattern at position $i, value: $assistMode")
-
-                // TO TEST IF NOTIFICATIONS WORK
-                //if (newAssistMode != previousAssistMode && previousAssistMode.isNotEmpty()) {
-                //    sendBatteryNotification("⚡ Assist Mode: $assistMode")
-                //}
-                previousAssistMode = newAssistMode
-                currentAssistMode = newAssistMode
-                return "⚡ Assist Mode: $assistMode at position $i"
-            }
-        }
-        return "⚡ Assist Mode: Pattern not found"
+    return if (parsedInfo.isNotEmpty()) {
+        "Parsed ${messages.size} messages:\n" + parsedInfo.joinToString("\n")
+    } else {
+        "No recognized messages found"
     }
-
-    private fun parseGenericPacket(data: ByteArray): String {
-        val bytes = data.map { it.toInt() and 0xFF }
-        return """
-            Unknown packet (${data.size} bytes):
-            Raw: ${bytes.joinToString("-") { "%02d".format(it) }}
-            Hex: ${bytes.joinToString("-") { "0x%02X".format(it) }}
-        """.trimIndent()
-    }
-
+}
     private fun disconnect() {
         if (hasPermissions()) {
             bluetoothGatt?.disconnect()

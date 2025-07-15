@@ -25,6 +25,17 @@ Example notification
 - 📊 Data logging with timestamps
 - 📱 Clean, user-friendly interface
 
+How does Bosch send the information via Bluetooth??
+
+Sample message
+| Message                  | Power (watts) |
+|--------------------------|----------------|
+| `30-04-98-5B-08-4F`      | 79 W           |
+| `30-05-98-5B-08-B2-04`   | 562 W          |
+| `30-02-98-5B`            | 0 W            |
+
+More information - [BLE Decoding](BLEdata.md)
+
 ## Prerequisites
 
 - Android device with Bluetooth LE support
