@@ -88,10 +88,22 @@ FC-01
 
 | Message                          | Notes                    |
 |----------------------------------|---------------------------|
-| `30-07-98-08-08-FE-0A-10-01`     | `10-01` appears constant  |
+| `30-07-98-08-08-FE-0A-10-01`     | `10-01` appears constant  I think 10 is a data type and 01 is the data here|
 
 ### Possibly Motor Torque?
 
 | Message                  | Torque (Nm)             |
 |--------------------------|--------------------------|
 | `30-04-98-15-08-XX`      | Divide `XX` by 200       |
+
+
+# How I worked this out...
+
+1. Logged data using [nrf Connect](https://play.google.com/store/apps/details?id=no.nordicsemi.android.mcp)
+2. Python script to strip out data, keeping time and hex codes
+3. Pasted into Excel
+4. Sorted
+5. Looked for patterns
+6. Matched up with Strava
+
+<img src="images\decodingBLE_excel.png" alt="drawing" width="800"/>
