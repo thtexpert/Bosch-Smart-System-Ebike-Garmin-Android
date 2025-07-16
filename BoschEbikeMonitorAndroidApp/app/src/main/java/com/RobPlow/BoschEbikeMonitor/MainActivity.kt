@@ -9,11 +9,13 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresPermission
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -424,7 +426,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun connectToBoschBike() {
-        if (!hasPermissions()) return
+        if (!hasPermissions()) {
+            requestBluetoothPermissions()
+            return
+        }
 
         connectionStatus = "Scanning for devices..."
         scanResults.clear()
@@ -445,6 +450,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     private fun startGeneralScan() {
         if (!hasPermissions()) {
             Log.e("BLE", "Missing permissions for scanning")
@@ -458,8 +464,12 @@ class MainActivity : ComponentActivity() {
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
-            .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+            .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                    setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+                }
+            }
             .setReportDelay(0)
             .build()
 
@@ -473,7 +483,7 @@ class MainActivity : ComponentActivity() {
         }
 
         // Stop scanning after 15 seconds
-        android.os.Handler(mainLooper).postDelayed({
+        Handler(mainLooper).postDelayed({
             if (isScanning) {
                 try {
                     bluetoothLeScanner.stopScan(generalScanCallback)
@@ -551,8 +561,13 @@ class MainActivity : ComponentActivity() {
                     gatt.setCharacteristicNotification(characteristic, true)
 
                     val descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-                    descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(descriptor)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        gatt.writeDescriptor(descriptor)
+                    }
 
                     runOnUiThread {
                         connectionStatus = "Connected"
@@ -567,9 +582,9 @@ class MainActivity : ComponentActivity() {
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
             characteristic?.let { char ->
-                val data = char.value
+                val data = char.value ?: return
                 val hexString = data.joinToString("-") { "%02X".format(it) }
-                val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+                val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
 
                 runOnUiThread {
                     rawHexData = hexString
@@ -602,7 +617,7 @@ class MainActivity : ComponentActivity() {
  * Decode a varint from the byte array starting at the given index
  * Returns Pair(decoded value, number of bytes consumed)
  */
-private fun decodeVarint(bytes: List<Int>, startIndex: Int): Pair<Int, Int> {
+private fun decodeVarint(bytes: List<Int>, startIndex: Int = 0): Pair<Int, Int> {
     if (startIndex >= bytes.size) return Pair(0, 0)
 
     var result = 0
@@ -689,7 +704,7 @@ private fun parseBoschPacket(bytes: List<Int>): List<BoschMessage> {
                 // Just message ID, no data - this means value is 0
                 dataValue = 0
                 Log.d("PARSER", "No data bytes - value is 0")
-            } else if (messageLength > 2) {
+            } else {
                 // We have data beyond the message ID
                 val dataTypeIndex = 4  // Position after start(1) + length(1) + messageId(2)
                 val dataStartIndex = 5  // Position after data type byte
@@ -718,9 +733,9 @@ private fun parseBoschPacket(bytes: List<Int>): List<BoschMessage> {
                         else -> {
                             // Unknown data type - try to parse as single byte or simple value
                             if (dataStartIndex < messageBytes.size) {
-                                dataValue = messageBytes[dataStartIndex]
-                                Log.d("PARSER", "Using first data byte for unknown type 0x${dataType.toString(16)}: $dataValue")
-                            }
+                                // No varint (0x08) found - value is zero
+                                dataValue = 0
+                                Log.d("PARSER", "No varint found - setting value to 0")                           }
                         }
                     }
                 } else {
