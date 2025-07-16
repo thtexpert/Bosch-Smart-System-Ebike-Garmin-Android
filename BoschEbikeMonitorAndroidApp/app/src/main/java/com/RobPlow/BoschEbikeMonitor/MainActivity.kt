@@ -49,7 +49,7 @@ data class BikeStatus(
 class MainActivity : ComponentActivity() {
 
     // Your bike's specific MAC address - UPDATE THIS!
-    private val BOSCH_BIKE_MAC = "00:04:63:A0:F8:AC" // Replace with your bike's MAC address
+    private val BOSCH_BIKE_MAC = "00:XX:XX:XX:XX:XX" // Replace with your bike's MAC address
 
     // Bosch eBike Service UUIDs
     private val BOSCH_STATUS_SERVICE_UUID = UUID.fromString("00000010-eaa2-11e9-81b4-2a2ae2dbcce4")
