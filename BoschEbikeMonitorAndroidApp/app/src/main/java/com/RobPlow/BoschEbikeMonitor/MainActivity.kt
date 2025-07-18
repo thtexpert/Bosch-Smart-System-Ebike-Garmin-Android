@@ -28,6 +28,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.*
 
 data class BoschMessage(
@@ -63,6 +65,28 @@ class MainActivity : ComponentActivity() {
     private lateinit var bluetoothLeScanner: BluetoothLeScanner
     private var bluetoothGatt: BluetoothGatt? = null
 
+    // BLE Advertising and GATT Server
+    private var bluetoothLeAdvertiser: BluetoothLeAdvertiser? = null
+    private var bluetoothGattServer: BluetoothGattServer? = null
+
+    // Standard BLE Service UUIDs for Power Meter and eBike
+    private val CYCLING_POWER_SERVICE_UUID: UUID = UUID.fromString("00001814-0000-1000-8000-00805f9b34fb")
+    private val CYCLING_POWER_MEASUREMENT_CHAR_UUID: UUID = UUID.fromString("00002A63-0000-1000-8000-00805f9b34fb")
+    private val CYCLING_POWER_FEATURE_CHAR_UUID: UUID = UUID.fromString("00002A65-0000-1000-8000-00805f9b34fb") // Optional
+
+    // You might need to define a custom eBike service or find a standard one if it exists
+    // For demonstration, let's create a custom "Bosch eBike Data Service"
+    private val EBike_DATA_SERVICE_UUID: UUID = UUID.fromString("000018F0-0000-1000-8000-00805f9b34fb") // Example Custom UUID
+    private val EBike_SPEED_CADENCE_CHAR_UUID: UUID = UUID.fromString("00002AF1-0000-1000-8000-00805f9b34fb") // Example Custom UUID
+    private val EBike_BATTERY_CHAR_UUID: UUID = UUID.fromString("00002AF2-0000-1000-8000-00805f9b34fb") // Example Custom UUID
+    private val EBike_ASSIST_MODE_CHAR_UUID: UUID = UUID.fromString("00002AF3-0000-1000-8000-00805f9b34fb") // Example Custom UUID
+
+    private var cyclingPowerMeasurementCharacteristic: BluetoothGattCharacteristic? = null
+    private var ebikeSpeedCadenceCharacteristic: BluetoothGattCharacteristic? = null
+    private var ebikeBatteryCharacteristic: BluetoothGattCharacteristic? = null
+    private var ebikeAssistModeCharacteristic: BluetoothGattCharacteristic? = null
+    private var cyclingPowerFeatureCharacteristic: BluetoothGattCharacteristic? = null
+
     private val scanResults = mutableStateListOf<ScanResult>()
     private var isScanning by mutableStateOf(false)
     private var connectionStatus by mutableStateOf("Disconnected")
@@ -85,6 +109,9 @@ class MainActivity : ComponentActivity() {
         if (allGranted) {
             initializeBluetooth()
             createNotificationChannel()
+            // Initialize BLE advertising and GATT server after permissions are granted
+            initializeGattServer()
+            startAdvertising()
         }
     }
 
@@ -366,6 +393,7 @@ class MainActivity : ComponentActivity() {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE, // Added for BLE advertising
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.POST_NOTIFICATIONS
             )
@@ -383,6 +411,7 @@ class MainActivity : ComponentActivity() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
         bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
+        bluetoothLeAdvertiser = bluetoothAdapter.bluetoothLeAdvertiser // Initialize advertiser
     }
 
     private fun createNotificationChannel() {
@@ -591,7 +620,7 @@ class MainActivity : ComponentActivity() {
 
                     // Parse the concatenated messages
                     val messages = parseBoschPacket(data.map { it.toInt() and 0xFF })
-                    val parsedData = processParsedMessages(messages)
+                    val parsedData = processParsedMessages(messages) // This will now update BLE server
                     bikeData = parsedData
 
                     // Add to log with timestamp
@@ -609,249 +638,257 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-/**
- * Corrected Bosch packet parsing functions
- */
+    /**
+     * Corrected Bosch packet parsing functions
+     */
 
-/**
- * Decode a varint from the byte array starting at the given index
- * Returns Pair(decoded value, number of bytes consumed)
- */
-private fun decodeVarint(bytes: List<Int>, startIndex: Int = 0): Pair<Int, Int> {
-    if (startIndex >= bytes.size) return Pair(0, 0)
+    /**
+     * Decode a varint from the byte array starting at the given index
+     * Returns Pair(decoded value, number of bytes consumed)
+     */
+    private fun decodeVarint(bytes: List<Int>, startIndex: Int = 0): Pair<Int, Int> {
+        if (startIndex >= bytes.size) return Pair(0, 0)
 
-    var result = 0
-    var shift = 0
-    var currentIndex = startIndex
-    var bytesConsumed = 0
+        var result = 0
+        var shift = 0
+        var currentIndex = startIndex
+        var bytesConsumed = 0
 
-    try {
-        while (currentIndex < bytes.size && bytesConsumed < 5) {
-            val byte = bytes[currentIndex]
-            result = result or ((byte and 0x7F) shl shift)
-            bytesConsumed++
-            currentIndex++
+        try {
+            while (currentIndex < bytes.size && bytesConsumed < 5) {
+                val byte = bytes[currentIndex]
+                result = result or ((byte and 0x7F) shl shift)
+                bytesConsumed++
+                currentIndex++
 
-            // If MSB is 0, this is the last byte
-            if ((byte and 0x80) == 0) {
-                break
+                // If MSB is 0, this is the last byte
+                if ((byte and 0x80) == 0) {
+                    break
+                }
+                shift += 7
             }
-            shift += 7
+        } catch (e: Exception) {
+            Log.e("VARINT", "Error decoding varint: ${e.message}")
+            return Pair(0, 1)
         }
-    } catch (e: Exception) {
-        Log.e("VARINT", "Error decoding varint: ${e.message}")
-        return Pair(0, 1)
+
+        return Pair(result, bytesConsumed)
     }
 
-    return Pair(result, bytesConsumed)
-}
+    /**
+     * Parse a complete BLE packet that may contain multiple concatenated messages
+     */
+    private fun parseBoschPacket(bytes: List<Int>): List<BoschMessage> {
+        val messages = mutableListOf<BoschMessage>()
+        var index = 0
 
-/**
- * Parse a complete BLE packet that may contain multiple concatenated messages
- */
-private fun parseBoschPacket(bytes: List<Int>): List<BoschMessage> {
-    val messages = mutableListOf<BoschMessage>()
-    var index = 0
+        Log.d("PARSER", "Parsing packet: ${bytes.joinToString("-") { "%02X".format(it) }}")
 
-    Log.d("PARSER", "Parsing packet: ${bytes.joinToString("-") { "%02X".format(it) }}")
-
-    try {
-        while (index < bytes.size) {
-            // Look for message start (0x30)
-            if (bytes[index] != 0x30) {
-                index++
-                continue
-            }
-
-            // Check if we have enough bytes for a basic message header
-            if (index + 2 >= bytes.size) break
-
-            val messageLength = bytes[index + 1]
-            Log.d("PARSER", "Found message start at index $index, length: $messageLength")
-
-            // The message length appears to be the payload size, not including start byte and length byte
-            // So total message size is messageLength + 2
-            val totalMessageSize = messageLength + 2
-            
-            // Validate message length is reasonable (between 2 and 50)
-            if (messageLength < 2 || messageLength > 50) {
-                Log.w("PARSER", "Invalid message length: $messageLength")
-                index++
-                continue
-            }
-
-            // Check if we have enough bytes for the complete message
-            if (index + totalMessageSize > bytes.size) {
-                Log.w("PARSER", "Not enough bytes for complete message (need ${totalMessageSize}, have ${bytes.size - index})")
-                break
-            }
-
-            // Extract the message ID (2 bytes after start and length)
-            if (index + 4 >= bytes.size) break
-            
-            val messageId = (bytes[index + 2] shl 8) or bytes[index + 3]
-            Log.d("PARSER", "Message ID: 0x${messageId.toString(16).uppercase()}")
-
-            // Get all message bytes including the extra data
-            val messageBytes = bytes.subList(index, minOf(index + totalMessageSize, bytes.size))
-            Log.d("PARSER", "Message bytes: ${messageBytes.joinToString("-") { "%02X".format(it) }}")
-            
-            // Determine if there's a data type byte and data
-            var dataValue = 0
-            var dataType = 0
-            
-            if (messageLength == 2) {
-                // Just message ID, no data - this means value is 0
-                dataValue = 0
-                Log.d("PARSER", "No data bytes - value is 0")
-            } else {
-                // We have data beyond the message ID
-                val dataTypeIndex = 4  // Position after start(1) + length(1) + messageId(2)
-                val dataStartIndex = 5  // Position after data type byte
-                
-                if (dataTypeIndex < messageBytes.size) {
-                    dataType = messageBytes[dataTypeIndex]
-                    Log.d("PARSER", "Data type: 0x${dataType.toString(16).uppercase()}")
-                    
-                    when (dataType) {
-                        0x08 -> {
-                            // Varint encoded data
-                            if (dataStartIndex < messageBytes.size) {
-                                val dataBytes = messageBytes.subList(dataStartIndex, messageBytes.size)
-                                val (value, consumed) = decodeVarint(dataBytes, 0)
-                                dataValue = value
-                                Log.d("PARSER", "Decoded varint value: $dataValue (consumed $consumed bytes)")
-                            }
-                        }
-                        0x0A -> {
-                            // Different encoding type - try as raw bytes
-                            if (dataStartIndex < messageBytes.size) {
-                                dataValue = messageBytes[dataStartIndex]
-                                Log.d("PARSER", "Using first data byte for 0x0A: $dataValue")
-                            }
-                        }
-                        else -> {
-                            // Unknown data type - try to parse as single byte or simple value
-                            if (dataStartIndex < messageBytes.size) {
-                                // No varint (0x08) found - value is zero
-                                dataValue = 0
-                                Log.d("PARSER", "No varint found - setting value to 0")                           }
-                        }
-                    }
-                } else {
-                    Log.w("PARSER", "Expected data type byte but message too short")
+        try {
+            while (index < bytes.size) {
+                // Look for message start (0x30)
+                if (bytes[index] != 0x30) {
+                    index++
+                    continue
                 }
+
+                // Check if we have enough bytes for a basic message header
+                if (index + 2 >= bytes.size) break
+
+                val messageLength = bytes[index + 1]
+                Log.d("PARSER", "Found message start at index $index, length: $messageLength")
+
+                // The message length appears to be the payload size, not including start byte and length byte
+                // So total message size is messageLength + 2
+                val totalMessageSize = messageLength + 2
+
+                // Validate message length is reasonable (between 2 and 50)
+                if (messageLength < 2 || messageLength > 50) {
+                    Log.w("PARSER", "Invalid message length: $messageLength")
+                    index++
+                    continue
+                }
+
+                // Check if we have enough bytes for the complete message
+                if (index + totalMessageSize > bytes.size) {
+                    Log.w("PARSER", "Not enough bytes for complete message (need ${totalMessageSize}, have ${bytes.size - index})")
+                    break
+                }
+
+                // Extract the message ID (2 bytes after start and length)
+                if (index + 4 >= bytes.size) break
+
+                val messageId = (bytes[index + 2] shl 8) or bytes[index + 3]
+                Log.d("PARSER", "Message ID: 0x${messageId.toString(16).uppercase()}")
+
+                // Get all message bytes including the extra data
+                val messageBytes = bytes.subList(index, minOf(index + totalMessageSize, bytes.size))
+                Log.d("PARSER", "Message bytes: ${messageBytes.joinToString("-") { "%02X".format(it) }}")
+
+                // Determine if there's a data type byte and data
+                var dataValue = 0
+                var dataType = 0
+
+                if (messageLength == 2) {
+                    // Just message ID, no data - this means value is 0
+                    dataValue = 0
+                    Log.d("PARSER", "No data bytes - value is 0")
+                } else {
+                    // We have data beyond the message ID
+                    val dataTypeIndex = 4  // Position after start(1) + length(1) + messageId(2)
+                    val dataStartIndex = 5  // Position after data type byte
+
+                    if (dataTypeIndex < messageBytes.size) {
+                        dataType = messageBytes[dataTypeIndex]
+                        Log.d("PARSER", "Data type: 0x${dataType.toString(16).uppercase()}")
+
+                        when (dataType) {
+                            0x08 -> {
+                                // Varint encoded data
+                                if (dataStartIndex < messageBytes.size) {
+                                    val dataBytes = messageBytes.subList(dataStartIndex, messageBytes.size)
+                                    val (value, consumed) = decodeVarint(dataBytes, 0)
+                                    dataValue = value
+                                    Log.d("PARSER", "Decoded varint value: $dataValue (consumed $consumed bytes)")
+                                }
+                            }
+                            0x0A -> {
+                                // Different encoding type - try as raw bytes
+                                if (dataStartIndex < messageBytes.size) {
+                                    dataValue = messageBytes[dataStartIndex]
+                                    Log.d("PARSER", "Using first data byte for 0x0A: $dataValue")
+                                }
+                            }
+                            else -> {
+                                // Unknown data type - try to parse as single byte or simple value
+                                if (dataStartIndex < messageBytes.size) {
+                                    // No varint (0x08) found - value is zero
+                                    dataValue = 0
+                                    Log.d("PARSER", "No varint found - setting value to 0")                           }
+                            }
+                        }
+                    } else {
+                        Log.w("PARSER", "Expected data type byte but message too short")
+                    }
+                }
+
+                val message = BoschMessage(
+                    messageId = messageId,
+                    messageType = dataType,
+                    value = dataValue,
+                    rawBytes = messageBytes
+                )
+
+                messages.add(message)
+                Log.d("PARSER", "Created message: ID=0x${messageId.toString(16)}, value=$dataValue")
+
+                // Move to next message using the total message size
+                index += totalMessageSize
             }
-
-            val message = BoschMessage(
-                messageId = messageId,
-                messageType = dataType,
-                value = dataValue,
-                rawBytes = messageBytes
-            )
-
-            messages.add(message)
-            Log.d("PARSER", "Created message: ID=0x${messageId.toString(16)}, value=$dataValue")
-
-            // Move to next message using the total message size
-            index += totalMessageSize
+        } catch (e: Exception) {
+            Log.e("PARSER", "Error parsing packet: ${e.message}")
+            return messages
         }
-    } catch (e: Exception) {
-        Log.e("PARSER", "Error parsing packet: ${e.message}")
+
+        Log.d("PARSER", "Parsed ${messages.size} messages")
         return messages
     }
 
-    Log.d("PARSER", "Parsed ${messages.size} messages")
-    return messages
-}
+    /**
+     * Process parsed messages and update bike status and BLE GATT server
+     */
+    private fun processParsedMessages(messages: List<BoschMessage>): String {
+        if (messages.isEmpty()) return "No messages to parse"
 
-/**
- * Process parsed messages and update bike status
- */
-private fun processParsedMessages(messages: List<BoschMessage>): String {
-    if (messages.isEmpty()) return "No messages to parse"
+        val parsedInfo = mutableListOf<String>()
+        Log.d("PROCESSOR", "Processing ${messages.size} messages")
 
-    val parsedInfo = mutableListOf<String>()
-    Log.d("PROCESSOR", "Processing ${messages.size} messages")
+        try {
+            for (message in messages) {
+                Log.d("PROCESSOR", "Processing message ID: 0x${message.messageId.toString(16).uppercase()}, value: ${message.value}")
 
-    try {
-        for (message in messages) {
-            Log.d("PROCESSOR", "Processing message ID: 0x${message.messageId.toString(16).uppercase()}, value: ${message.value}")
-            
-            when (message.messageId) {
-                0x985A -> {
-                    // Cadence - divide by 2
-                    val cadence = maxOf(0, message.value / 2)
-                    bikeStatus = bikeStatus.copy(cadence = cadence)
-                    parsedInfo.add("🏃 Cadence: $cadence RPM")
-                    Log.d("PROCESSOR", "Updated cadence: $cadence")
-                }
-                0x985B -> {
-                    // Human Power - use value directly
-                    val power = maxOf(0, message.value)
-                    bikeStatus = bikeStatus.copy(humanPower = power)
-                    parsedInfo.add("🦵 Human Power: ${power}W")
-                    Log.d("PROCESSOR", "Updated human power: $power")
-                }
-                0x985D -> {
-                    // Motor Power
-                    val power = maxOf(0, message.value)
-                    bikeStatus = bikeStatus.copy(motorPower = power)
-                    parsedInfo.add("⚙️ Motor Power: ${power}W")
-                    Log.d("PROCESSOR", "Updated motor power: $power")
-                }
-                0x982D -> {
-                    // Speed - divide by 100 for km/h
-                    val speed = maxOf(0.0, message.value / 100.0)
-                    bikeStatus = bikeStatus.copy(speed = speed)
-                    parsedInfo.add("🚀 Speed: ${String.format("%.1f", speed)} km/h")
-                    Log.d("PROCESSOR", "Updated speed: $speed")
-                }
-                0x8088 -> {
-                    // Battery percentage
-                    val newBattery = message.value.coerceIn(0, 100)
-                    if (newBattery != previousBattery && previousBattery != 0) {
-                        sendBatteryNotification("🔋 Battery: $newBattery%")
+                when (message.messageId) {
+                    0x985A -> {
+                        // Cadence - divide by 2
+                        val cadence = maxOf(0, message.value / 2)
+                        bikeStatus = bikeStatus.copy(cadence = cadence)
+                        parsedInfo.add("🏃 Cadence: $cadence RPM")
+                        Log.d("PROCESSOR", "Updated cadence: $cadence")
+                        updateEbikeSpeedCadenceCharacteristic()
                     }
-                    previousBattery = newBattery
-                    bikeStatus = bikeStatus.copy(battery = newBattery)
-                    parsedInfo.add("🔋 Battery: ${newBattery}%")
-                    Log.d("PROCESSOR", "Updated battery: $newBattery")
-                }
-                0x9809 -> {
-                    // Assist Mode - use value directly
-                    val newAssistMode = message.value.coerceIn(0, 10)
-                    if (newAssistMode != previousAssistMode && previousAssistMode != 0) {
-                        sendBatteryNotification("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
+                    0x985B -> {
+                        // Human Power - use value directly
+                        val power = maxOf(0, message.value)
+                        bikeStatus = bikeStatus.copy(humanPower = power)
+                        parsedInfo.add("🦵 Human Power: ${power}W")
+                        Log.d("PROCESSOR", "Updated human power: $power")
+                        updateCyclingPowerMeasurementCharacteristic()
                     }
-                    previousAssistMode = newAssistMode
-                    bikeStatus = bikeStatus.copy(assistMode = newAssistMode)
-                    parsedInfo.add("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
-                    Log.d("PROCESSOR", "Updated assist mode: $newAssistMode")
-                }
-                else -> {
-                    // Unknown message ID
-                    parsedInfo.add("❓ Unknown ID 0x${message.messageId.toString(16).uppercase()}: ${message.value}")
-                    Log.d("PROCESSOR", "Unknown message ID: 0x${message.messageId.toString(16).uppercase()}")
+                    0x985D -> {
+                        // Motor Power - (Consider if you want to include motor power in BLE characteristics)
+                        val power = maxOf(0, message.value)
+                        bikeStatus = bikeStatus.copy(motorPower = power)
+                        parsedInfo.add("⚙️ Motor Power: ${power}W")
+                        Log.d("PROCESSOR", "Updated motor power: $power")
+                        // No direct standard BLE characteristic for motor power, could be part of custom service
+                    }
+                    0x982D -> {
+                        // Speed - divide by 100 for km/h
+                        val speed = maxOf(0.0, message.value / 100.0)
+                        bikeStatus = bikeStatus.copy(speed = speed)
+                        parsedInfo.add("🚀 Speed: ${String.format("%.1f", speed)} km/h")
+                        Log.d("PROCESSOR", "Updated speed: $speed")
+                        updateEbikeSpeedCadenceCharacteristic()
+                    }
+                    0x8088 -> {
+                        // Battery percentage
+                        val newBattery = message.value.coerceIn(0, 100)
+                        if (newBattery != previousBattery && previousBattery != 0) {
+                            sendBatteryNotification("🔋 Battery: $newBattery%")
+                        }
+                        previousBattery = newBattery
+                        bikeStatus = bikeStatus.copy(battery = newBattery)
+                        parsedInfo.add("🔋 Battery: ${newBattery}%")
+                        Log.d("PROCESSOR", "Updated battery: $newBattery")
+                        updateEbikeBatteryCharacteristic()
+                    }
+                    0x9809 -> {
+                        // Assist Mode - use value directly
+                        val newAssistMode = message.value.coerceIn(0, 10)
+                        if (newAssistMode != previousAssistMode && previousAssistMode != 0) {
+                            sendBatteryNotification("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
+                        }
+                        previousAssistMode = newAssistMode
+                        bikeStatus = bikeStatus.copy(assistMode = newAssistMode)
+                        parsedInfo.add("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
+                        Log.d("PROCESSOR", "Updated assist mode: $newAssistMode")
+                        updateEbikeAssistModeCharacteristic()
+                    }
+                    else -> {
+                        // Unknown message ID
+                        parsedInfo.add("❓ Unknown ID 0x${message.messageId.toString(16).uppercase()}: ${message.value}")
+                        Log.d("PROCESSOR", "Unknown message ID: 0x${message.messageId.toString(16).uppercase()}")
+                    }
                 }
             }
+        } catch (e: Exception) {
+            Log.e("PROCESSOR", "Error processing messages: ${e.message}")
+            return "Error processing messages: ${messages.size} found"
         }
-    } catch (e: Exception) {
-        Log.e("PROCESSOR", "Error processing messages: ${e.message}")
-        return "Error processing messages: ${messages.size} found"
-    }
 
-    return if (parsedInfo.isNotEmpty()) {
-        "Parsed ${messages.size} messages:\n" + parsedInfo.joinToString("\n")
-    } else {
-        "No recognized messages found"
+        return if (parsedInfo.isNotEmpty()) {
+            "Parsed ${messages.size} messages:\n" + parsedInfo.joinToString("\n")
+        } else {
+            "No recognized messages found"
+        }
     }
-}
     private fun disconnect() {
         if (hasPermissions()) {
             bluetoothGatt?.disconnect()
             bluetoothGatt?.close()
             bluetoothGatt = null
+            stopAdvertising() // Stop advertising when disconnecting from bike
+            closeGattServer() // Close GATT server when disconnecting
         }
     }
 
@@ -860,6 +897,7 @@ private fun processParsedMessages(messages: List<BoschMessage>): String {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE, // Check for advertising permission
                 Manifest.permission.ACCESS_FINE_LOCATION
             )
         } else {
@@ -882,10 +920,382 @@ private fun processParsedMessages(messages: List<BoschMessage>): String {
 
         return allGranted
     }
+    //region Helper functions to generate BLE characteristic values
+
+    /**
+     * Generates the byte array for the Cycling Power Measurement characteristic.
+     * Format (little-endian):
+     * - Flags (2 bytes): Indicates what data fields are present.
+     * - Instantaneous Power (2 bytes, SINT16): Power in Watts.
+     *
+     * @param instantaneousPower The current instantaneous power in Watts.
+     * @return Byte array representing the Cycling Power Measurement characteristic value.
+     */
+    private fun generateCyclingPowerMeasurement(instantaneousPower: Int): ByteArray {
+        val flags: Short = 0x0000 // No flags set for now (e.g., no pedal power balance, no accumulated torque)
+        val powerValue: Short = instantaneousPower.toShort() // Convert Int to Short
+
+        return ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(flags)
+            .putShort(powerValue)
+            .array()
+    }
+
+    /**
+     * Generates the byte array for the custom eBike Speed and Cadence characteristic.
+     * Format (little-endian):
+     * - Speed (2 bytes, UINT16): Speed multiplied by 100 (e.g., 25.50 km/h -> 2550)
+     * - Cadence (2 bytes, UINT16): Cadence in RPM
+     *
+     * @param speed The current speed in km/h.
+     * @param cadence The current cadence in RPM.
+     * @return Byte array representing the eBike Speed and Cadence characteristic value.
+     */
+    private fun generateEbikeSpeedCadenceBytes(speed: Double, cadence: Int): ByteArray {
+        val speedValue = (speed * 100).toInt().toShort() // Convert to Short, assuming max speed won't exceed Short.MAX_VALUE / 100
+        val cadenceValue = cadence.toShort() // Convert to Short
+
+        return ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(speedValue)
+            .putShort(cadenceValue)
+            .array()
+    }
+    //endregion
+
+    //region BLE GATT Server and Advertising
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
+    private fun initializeGattServer() {
+        if (!hasPermissions()) {
+            Log.e("GATT_SERVER", "Missing permissions for GATT server")
+            return
+        }
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        bluetoothGattServer = bluetoothManager.openGattServer(this, gattServerCallback)
+        setupGattServices()
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
+    private fun setupGattServices() {
+        // Cycling Power Service
+        val cyclingPowerService = BluetoothGattService(CYCLING_POWER_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+
+        // Cycling Power Measurement Characteristic (NOTIFY)
+        cyclingPowerMeasurementCharacteristic = BluetoothGattCharacteristic(
+            CYCLING_POWER_MEASUREMENT_CHAR_UUID,
+            BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+            BluetoothGattCharacteristic.PERMISSION_READ
+        )
+        cyclingPowerMeasurementCharacteristic?.addDescriptor(
+            BluetoothGattDescriptor(
+                UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // Client Characteristic Configuration Descriptor
+                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+            )
+        )
+        cyclingPowerService.addCharacteristic(cyclingPowerMeasurementCharacteristic)
+
+        // Cycling Power Feature Characteristic (READ) - Optional
+        cyclingPowerFeatureCharacteristic = BluetoothGattCharacteristic(
+            CYCLING_POWER_FEATURE_CHAR_UUID,
+            BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ
+        )
+        // Set a default value for features (e.g., crank revolution measurement supported)
+        cyclingPowerFeatureCharacteristic?.value = byteArrayOf(0x02, 0x00) // Flags for "Crank Revolution Measurement Supported"
+        cyclingPowerService.addCharacteristic(cyclingPowerFeatureCharacteristic)
+
+        bluetoothGattServer?.addService(cyclingPowerService)
+        Log.d("GATT_SERVER", "Cycling Power Service added")
+
+        // Bosch eBike Data Service (Custom Service)
+        val ebikeDataService = BluetoothGattService(EBike_DATA_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+
+        // eBike Speed and Cadence Characteristic (NOTIFY, READ)
+        ebikeSpeedCadenceCharacteristic = BluetoothGattCharacteristic(
+            EBike_SPEED_CADENCE_CHAR_UUID,
+            BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ
+        )
+        ebikeSpeedCadenceCharacteristic?.addDescriptor(
+            BluetoothGattDescriptor(
+                UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // Client Characteristic Configuration Descriptor
+                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+            )
+        )
+        ebikeDataService.addCharacteristic(ebikeSpeedCadenceCharacteristic)
+
+        // eBike Battery Characteristic (NOTIFY, READ)
+        ebikeBatteryCharacteristic = BluetoothGattCharacteristic(
+            EBike_BATTERY_CHAR_UUID,
+            BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ
+        )
+        ebikeBatteryCharacteristic?.addDescriptor(
+            BluetoothGattDescriptor(
+                UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // Client Characteristic Configuration Descriptor
+                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+            )
+        )
+        ebikeDataService.addCharacteristic(ebikeBatteryCharacteristic)
+
+        // eBike Assist Mode Characteristic (NOTIFY, READ)
+        ebikeAssistModeCharacteristic = BluetoothGattCharacteristic(
+            EBike_ASSIST_MODE_CHAR_UUID,
+            BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ
+        )
+        ebikeAssistModeCharacteristic?.addDescriptor(
+            BluetoothGattDescriptor(
+                UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // Client Characteristic Configuration Descriptor
+                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+            )
+        )
+        ebikeDataService.addCharacteristic(ebikeAssistModeCharacteristic)
+
+
+        bluetoothGattServer?.addService(ebikeDataService)
+        Log.d("GATT_SERVER", "eBike Data Service added")
+    }
+
+    private val gattServerCallback = object : BluetoothGattServerCallback() {
+        override fun onConnectionStateChange(device: BluetoothDevice?, status: Int, newState: Int) {
+            super.onConnectionStateChange(device, status, newState)
+            val deviceAddress = device?.address ?: "unknown"
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                Log.d("GATT_SERVER", "Device connected to GATT server: $deviceAddress")
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                Log.d("GATT_SERVER", "Device disconnected from GATT server: $deviceAddress")
+            }
+        }
+
+        override fun onCharacteristicReadRequest(device: BluetoothDevice?, requestId: Int, offset: Int, characteristic: BluetoothGattCharacteristic?) {
+            super.onCharacteristicReadRequest(device, requestId, offset, characteristic)
+            if (characteristic == null) {
+                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
+                return
+            }
+
+            when (characteristic.uuid) {
+                CYCLING_POWER_MEASUREMENT_CHAR_UUID -> {
+                    // Return current power data (0 if not available)
+                    val value = generateCyclingPowerMeasurement(bikeStatus.humanPower)
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                    Log.d("GATT_SERVER", "Read request for Power Measurement. Value: ${bikeStatus.humanPower}")
+                }
+                CYCLING_POWER_FEATURE_CHAR_UUID -> {
+                    // Features (already set during service creation)
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, characteristic.value)
+                    Log.d("GATT_SERVER", "Read request for Power Feature. Value: ${characteristic.value?.joinToString("-") { "%02X".format(it) }}")
+                }
+                EBike_SPEED_CADENCE_CHAR_UUID -> {
+                    val value = generateEbikeSpeedCadenceBytes(bikeStatus.speed, bikeStatus.cadence)
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                    Log.d("GATT_SERVER", "Read request for eBike Speed/Cadence. Speed: ${bikeStatus.speed}, Cadence: ${bikeStatus.cadence}")
+                }
+                EBike_BATTERY_CHAR_UUID -> {
+                    val value = byteArrayOf(bikeStatus.battery.toByte())
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                    Log.d("GATT_SERVER", "Read request for eBike Battery. Value: ${bikeStatus.battery}")
+                }
+                EBike_ASSIST_MODE_CHAR_UUID -> {
+                    val value = byteArrayOf(bikeStatus.assistMode.toByte())
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                    Log.d("GATT_SERVER", "Read request for eBike Assist Mode. Value: ${bikeStatus.assistMode}")
+                }
+                else -> {
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
+                    Log.w("GATT_SERVER", "Unknown characteristic read request for ${characteristic.uuid}")
+                }
+            }
+        }
+
+        override fun onDescriptorReadRequest(device: BluetoothDevice?, requestId: Int, offset: Int, descriptor: BluetoothGattDescriptor?) {
+            super.onDescriptorReadRequest(device, requestId, offset, descriptor)
+            if (descriptor?.uuid == UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")) { // CCCD
+                val value = if (descriptor.characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) {
+                    BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                } else {
+                    BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+                }
+                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                Log.d("GATT_SERVER", "Read request for CCCD of ${descriptor.characteristic.uuid}")
+            } else {
+                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
+                Log.w("GATT_SERVER", "Unknown descriptor read request for ${descriptor?.uuid}")
+            }
+        }
+
+        override fun onDescriptorWriteRequest(device: BluetoothDevice?, requestId: Int, descriptor: BluetoothGattDescriptor?, preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray?) {
+            super.onDescriptorWriteRequest(device, requestId, descriptor, preparedWrite, responseNeeded, offset, value)
+            if (descriptor?.uuid == UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")) { // CCCD
+                if (responseNeeded) {
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+                }
+
+                if (Arrays.equals(value, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
+                    Log.d("GATT_SERVER", "Enable notifications for ${descriptor?.characteristic?.uuid}")
+                } else if (Arrays.equals(value, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)) {
+                    Log.d("GATT_SERVER", "Disable notifications for ${descriptor?.characteristic?.uuid}")
+                }
+            } else {
+                if (responseNeeded) {
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
+                }
+                Log.w("GATT_SERVER", "Unknown descriptor write request for ${descriptor?.uuid}")
+            }
+        }
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
+    private fun startAdvertising() {
+        if (!hasPermissions()) {
+            Log.e("ADVERTISER", "Missing permissions for advertising")
+            return
+        }
+        if (bluetoothLeAdvertiser == null) {
+            Log.e("ADVERTISER", "BluetoothLeAdvertiser not initialized")
+            return
+        }
+
+        val settings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setConnectable(true)
+            .setTimeout(0) // Advertise indefinitely
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+            .build()
+
+        val data = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
+            .addServiceUuid(ParcelUuid(CYCLING_POWER_SERVICE_UUID))
+            .addServiceUuid(ParcelUuid(EBike_DATA_SERVICE_UUID)) // Add your custom service UUID
+            .build()
+
+        try {
+            bluetoothLeAdvertiser?.startAdvertising(settings, data, advertiseCallback)
+            Log.d("ADVERTISER", "Advertising started")
+        } catch (e: Exception) {
+            Log.e("ADVERTISER", "Failed to start advertising: ${e.message}")
+        }
+    }
+
+    private val advertiseCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+            super.onStartSuccess(settingsInEffect)
+            Log.d("ADVERTISER", "Advertising successfully started")
+        }
+
+        override fun onStartFailure(errorCode: Int) {
+            super.onStartFailure(errorCode)
+            Log.e("ADVERTISER", "Advertising failed: $errorCode")
+            // Handle error codes, e.g., ADVERTISE_FAILED_ALREADY_STARTED, ADVERTISE_FAILED_FEATURE_UNSUPPORTED
+        }
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
+    private fun stopAdvertising() {
+        if (!hasPermissions()) {
+            Log.e("ADVERTISER", "Missing permissions for stopping advertising")
+            return
+        }
+        try {
+            bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
+            Log.d("ADVERTISER", "Advertising stopped")
+        } catch (e: Exception) {
+            Log.e("ADVERTISER", "Error stopping advertising: ${e.message}")
+        }
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun closeGattServer() {
+        if (!hasPermissions()) {
+            Log.e("GATT_SERVER", "Missing permissions for closing GATT server")
+            return
+        }
+        try {
+            bluetoothGattServer?.close()
+            bluetoothGattServer = null
+            Log.d("GATT_SERVER", "GATT server closed")
+        } catch (e: Exception) {
+            Log.e("GATT_SERVER", "Error closing GATT server: ${e.message}")
+        }
+    }
+
+    //region Characteristic Update Functions
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun updateCyclingPowerMeasurementCharacteristic() {
+        val characteristic = cyclingPowerMeasurementCharacteristic ?: return
+        val power = bikeStatus.humanPower // Power in Watts
+
+        // Cycling Power Measurement characteristic format (Little Endian)
+        // Flags (2 bytes): 0x0001 for "Pedal Power Balance Present", 0x0002 for "Accumulated Torque Present", etc.
+        // Power (2 bytes, signed integer, in Watts)
+        // Accumulated Crank Revolutions (2 bytes)
+        // Last Crank Event Time (2 bytes, 1/1024 s units)
+
+        // For simplicity, let's just send power for now.
+        // A real power meter would calculate accumulated crank revolutions and last crank event time.
+        // We will use 0 for flags for now, and only send power.
+        // Power is a signed 16-bit integer (SINT16)
+
+        val flags: Short = 0x0000 // No flags set for now
+        val powerValue: Short = power.toShort() // Convert Int to Short
+
+        val value = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(flags)
+            .putShort(powerValue)
+            .array()
+
+        characteristic.value = value
+        bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false) // null means all connected devices
+        Log.d("GATT_SERVER", "Notified Power: $power Watts")
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun updateEbikeSpeedCadenceCharacteristic() {
+        val characteristic = ebikeSpeedCadenceCharacteristic ?: return
+        val speed = (bikeStatus.speed * 100).toInt() // Speed in 0.01 km/h increments for int
+        val cadence = bikeStatus.cadence // Cadence in RPM
+
+        // Custom format: Speed (2 bytes, little endian), Cadence (2 bytes, little endian)
+        val value = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(speed.toShort())
+            .putShort(cadence.toShort())
+            .array()
+
+        characteristic.value = value
+        bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false)
+        Log.d("GATT_SERVER", "Notified eBike Speed/Cadence: Speed=${bikeStatus.speed}, Cadence=${bikeStatus.cadence}")
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun updateEbikeBatteryCharacteristic() {
+        val characteristic = ebikeBatteryCharacteristic ?: return
+        val battery = bikeStatus.battery.toByte() // Battery in percentage (0-100)
+
+        // Single byte for battery percentage
+        characteristic.value = byteArrayOf(battery)
+        bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false)
+        Log.d("GATT_SERVER", "Notified eBike Battery: ${bikeStatus.battery}%")
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun updateEbikeAssistModeCharacteristic() {
+        val characteristic = ebikeAssistModeCharacteristic ?: return
+        val assistMode = bikeStatus.assistMode.toByte() // Assist mode
+
+        // Single byte for assist mode
+        characteristic.value = byteArrayOf(assistMode)
+        bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false)
+        Log.d("GATT_SERVER", "Notified eBike Assist Mode: ${bikeStatus.assistMode}")
+    }
+    //endregion
 
     override fun onDestroy() {
         super.onDestroy()
         disconnect()
+        stopAdvertising()
+        closeGattServer()
     }
 }
 
