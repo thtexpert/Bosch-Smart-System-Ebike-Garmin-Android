@@ -1,8 +1,16 @@
 # WIP - Bosch eBike Monitor
 
-A simple Android app to connect to Bosch eBikes via Bluetooth Low Energy (BLE) and monitor real-time data including battery level and assist mode.
+A simple Android app to connect to Bosch eBikes via Bluetooth Low Energy (BLE) and monitor real-time data and re-broadcast as a BLE sensor so that a Garmin Edge device can read it. 
 
-Creates an android notification that can be pushed to any connected devices like Garmin Smartwatches. 
+Currently I have decoded fields for
+- Battery percentage
+- Assist mode
+- Human Power (watts)
+- Speed
+- Cadence
+- Motor Power (watts)
+
+It also creates a notification when battery percentage changes so you can see it on any smartwatch or other connected device
 
 <img src="images\ebikeMonitorScreenshot.jpg" alt="drawing" width="200"/> <img src="images\FlowScreenshot.jpg" alt="drawing" width="200"/>
 
@@ -14,18 +22,22 @@ https://www.emtbforums.com/threads/project-to-enable-bosch-garmin-integration.37
 
 <img src="images\notification.jpg" alt="drawing" width="400"/>
 
-Example notification
+Example notification using assist mode
 
+## TO DO LIST
 
-## Features
+Features to be added
+- Fix disconnect button
+- Fix SCAN + connect 
+- UI to allow notifications (e.g. for battery percentage) to be turned on/off
+- Test that all values return to zero correctly (e.g. motor power)
+- Run as an android service in background
+- Test BLE Ebike and Speed/Cadence broadcast using Garmin Edge (or Zwift / MyWhoosh)
+- Run on alternative phones / bikes / check uuids - are they fixed or variable? 
+- Error checking - deal with disconnects etc. gracefully
+- Remove debug logs
 
-- 🔗 Direct connection to Bosch eBikes via BLE
-- 🔋 Real-time battery monitoring (two formats)
-- ⚡ Live assist mode display
-- 📊 Data logging with timestamps
-- 📱 Clean, user-friendly interface
-
-How does Bosch send the information via Bluetooth??
+## How does Bosch send the information via Bluetooth??
 
 Sample message
 | Message                  | Power (watts) |
@@ -34,7 +46,7 @@ Sample message
 | `30-05-98-5B-08-B2-04`   | 562 W          |
 | `30-02-98-5B`            | 0 W            |
 
-More information - [BLE Decoding](BLEdata.md)
+More information - ➡️ [BLE Decoding](BLEdata.md)
 
 ## Prerequisites
 
@@ -73,20 +85,6 @@ More information - [BLE Decoding](BLEdata.md)
 2. Wait for your bike to appear in the list
 3. Tap on your bike to connect
 
-### Live Data Display
-
-Once connected, you'll see:
-- **🚴 Live Bike Status** - Current assist mode and battery levels
-- **📡 Raw Data** - Latest data packet received
-- **📋 Data Log** - Timestamped history of all data
-
-## Supported Data
-
-The app currently decodes:
-- **Battery Level**: Two different battery value formats
-- **Assist Mode**: Current motor assistance level (0-5)
-- **Raw Telemetry**: All received data packets for analysis
-
 ## Troubleshooting
 
 - **Can't find bike**: Ensure bike is on and close to your phone
@@ -100,17 +98,8 @@ Built with:
 - Android Jetpack Compose
 - Android Bluetooth LE APIs
 
-- CLAUDE.ai
-
-# TO DO LIST
-
-- Hardcoded UUIDs: Bosch service UUIDs look suspicious - custom/placeholder UUIDs rather than official Bosch ones - investigate? read from BLE service?
-- Data parsing assumptions: The battery/assist parsing logic makes assumptions about packet structure that may not be correct
-- No error recovery: Limited handling of connection failures or data corruption
-
-*UI*
-- choose which fields are output as BLE sources (speed/cadence/ebike data)
-- choose which fields are output as notifications upon change (battery percentage?)
+- CLAUDE.ai / Gemini (better!) / chatgpt etc.
+- I found it best to reset the chat for each incremental code change. Remove uneeded debugging and functions as soon as possible. Keep code size small. Keep chat purpose small and contained, with clear end goal (add feature X), start a new chat once finished, pasting updated code in. 
 
 ## License
 

@@ -51,7 +51,7 @@ data class BikeStatus(
 class MainActivity : ComponentActivity() {
 
     // Your bike's specific MAC address - UPDATE THIS!
-    private val BOSCH_BIKE_MAC = "00:XX:XX:XX:XX:XX" // Replace with your bike's MAC address
+    private val BOSCH_BIKE_MAC = "00:04:63:A0:F8:AC" // Replace with your bike's MAC address
 
     // Bosch eBike Service UUIDs
     private val BOSCH_STATUS_SERVICE_UUID = UUID.fromString("00000010-eaa2-11e9-81b4-2a2ae2dbcce4")
@@ -93,14 +93,12 @@ class MainActivity : ComponentActivity() {
     private var bikeData by mutableStateOf("No data")
     private var rawHexData by mutableStateOf("No data")
     private var manualMacAddress by mutableStateOf(BOSCH_BIKE_MAC)
-    private val dataLog = mutableStateListOf<String>()
-
+    
     // Live bike status
     private var bikeStatus by mutableStateOf(BikeStatus())
 
-    // Previous values for change detection
+    // Previous values for change detection - used for battery notification
     private var previousBattery = 0
-    private var previousAssistMode = 0
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -117,9 +115,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         requestBluetoothPermissions()
-
         setContent {
             BoschEBikeMonitorTheme {
                 Surface(
@@ -196,7 +192,6 @@ class MainActivity : ComponentActivity() {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Manual MAC Address Input
             Card(
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -212,7 +207,7 @@ class MainActivity : ComponentActivity() {
                         value = manualMacAddress,
                         onValueChange = { manualMacAddress = it },
                         label = { Text("MAC Address") },
-                        placeholder = { Text("XX:XX:XX:XX:XX:XX") },
+                        placeholder = { Text("XX:XX:XX:XX:XX:XX") },  // Manual MAC Address Input
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -228,7 +223,6 @@ class MainActivity : ComponentActivity() {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Bike Data Display
             if (connectionStatus == "Connected") {
                 // Live Status Card
                 Card(
@@ -259,74 +253,6 @@ class MainActivity : ComponentActivity() {
                                 Text("🚀 Speed: ${String.format("%.1f", bikeStatus.speed)} km/h", style = MaterialTheme.typography.titleMedium)
                                 Text("🏃 Cadence: ${bikeStatus.cadence} RPM", style = MaterialTheme.typography.bodyMedium)
                                 Text("⚙️ Motor: ${bikeStatus.motorPower}W", style = MaterialTheme.typography.bodyMedium)
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Raw Data Card
-                Card(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp)
-                    ) {
-                        Text(
-                            text = "📡 Raw Data:",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = rawHexData,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = bikeData,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Data Log
-                Card(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "📋 Data Log:",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            Button(
-                                onClick = { dataLog.clear() },
-                                modifier = Modifier.size(80.dp, 32.dp)
-                            ) {
-                                Text("Clear", fontSize = 12.sp)
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LazyColumn(
-                            modifier = Modifier.height(200.dp)
-                        ) {
-                            items(dataLog) { logEntry ->
-                                Text(
-                                    text = logEntry,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    modifier = Modifier.padding(vertical = 2.dp)
-                                )
                             }
                         }
                     }
@@ -418,7 +344,7 @@ class MainActivity : ComponentActivity() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val name = "Bosch eBike Status"
-                val descriptionText = "Battery and assist mode updates from your eBike"
+                val descriptionText = "Batteryupdates from your eBike"
                 val importance = NotificationManager.IMPORTANCE_DEFAULT
                 val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
                     description = descriptionText
@@ -529,7 +455,6 @@ class MainActivity : ComponentActivity() {
     private val generalScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (!hasPermissions()) return
-
             val device = result.device
             val deviceName = device.name ?: "Unknown"
             val deviceAddress = device.address
@@ -537,12 +462,10 @@ class MainActivity : ComponentActivity() {
             // Add to results if not already there
             if (!scanResults.any { it.device.address == deviceAddress }) {
                 scanResults.add(result)
-
                 // Log all devices for debugging
                 Log.d("BLE", "Found device: $deviceName ($deviceAddress)")
             }
         }
-
         override fun onScanFailed(errorCode: Int) {
             Log.e("BLE", "Scan failed with error: $errorCode")
             isScanning = false
@@ -570,8 +493,7 @@ class MainActivity : ComponentActivity() {
                         connectionStatus = "Disconnected"
                         bikeData = "No data"
                         rawHexData = "No data"
-                        // Reset live status
-                        bikeStatus = BikeStatus()
+                        bikeStatus = BikeStatus() // Reset live status
                     }
                     BluetoothProfile.STATE_CONNECTING -> {
                         connectionStatus = "Connecting..."
@@ -622,17 +544,6 @@ class MainActivity : ComponentActivity() {
                     val messages = parseBoschPacket(data.map { it.toInt() and 0xFF })
                     val parsedData = processParsedMessages(messages) // This will now update BLE server
                     bikeData = parsedData
-
-                    // Add to log with timestamp
-                    val logEntry = "$timestamp [${data.size}b]: $hexString"
-                    dataLog.add(0, logEntry)
-
-                    // Keep only last 50 entries
-                    if (dataLog.size > 50) {
-                        dataLog.removeAt(dataLog.size - 1)
-                    }
-
-                    Log.d("BLE_DATA", logEntry)
                 }
             }
         }
@@ -691,57 +602,46 @@ class MainActivity : ComponentActivity() {
                     index++
                     continue
                 }
-
                 // Check if we have enough bytes for a basic message header
                 if (index + 2 >= bytes.size) break
 
                 val messageLength = bytes[index + 1]
                 Log.d("PARSER", "Found message start at index $index, length: $messageLength")
 
-                // The message length appears to be the payload size, not including start byte and length byte
-                // So total message size is messageLength + 2
+                // Message length is payload size, not including start byte and length byte
                 val totalMessageSize = messageLength + 2
 
-                // Validate message length is reasonable (between 2 and 50)
                 if (messageLength < 2 || messageLength > 50) {
                     Log.w("PARSER", "Invalid message length: $messageLength")
                     index++
                     continue
                 }
 
-                // Check if we have enough bytes for the complete message
                 if (index + totalMessageSize > bytes.size) {
                     Log.w("PARSER", "Not enough bytes for complete message (need ${totalMessageSize}, have ${bytes.size - index})")
                     break
                 }
 
-                // Extract the message ID (2 bytes after start and length)
-                if (index + 4 >= bytes.size) break
-
-                val messageId = (bytes[index + 2] shl 8) or bytes[index + 3]
+                
+                if (index + 4 >= bytes.size) 
+                    break
+                val messageId = (bytes[index + 2] shl 8) or bytes[index + 3] // Extract the message ID (2 bytes after start and length)
                 Log.d("PARSER", "Message ID: 0x${messageId.toString(16).uppercase()}")
 
-                // Get all message bytes including the extra data
-                val messageBytes = bytes.subList(index, minOf(index + totalMessageSize, bytes.size))
+                val messageBytes = bytes.subList(index, minOf(index + totalMessageSize, bytes.size)) // Get all message bytes including the extra data
                 Log.d("PARSER", "Message bytes: ${messageBytes.joinToString("-") { "%02X".format(it) }}")
 
                 // Determine if there's a data type byte and data
                 var dataValue = 0
                 var dataType = 0
-
-                if (messageLength == 2) {
-                    // Just message ID, no data - this means value is 0
-                    dataValue = 0
-                    Log.d("PARSER", "No data bytes - value is 0")
-                } else {
-                    // We have data beyond the message ID
+                
+                // If message length is <= 2, the dataValue = 0
+                if (messageLength > 2) {
                     val dataTypeIndex = 4  // Position after start(1) + length(1) + messageId(2)
                     val dataStartIndex = 5  // Position after data type byte
 
                     if (dataTypeIndex < messageBytes.size) {
                         dataType = messageBytes[dataTypeIndex]
-                        Log.d("PARSER", "Data type: 0x${dataType.toString(16).uppercase()}")
-
                         when (dataType) {
                             0x08 -> {
                                 // Varint encoded data
@@ -782,8 +682,7 @@ class MainActivity : ComponentActivity() {
                 messages.add(message)
                 Log.d("PARSER", "Created message: ID=0x${messageId.toString(16)}, value=$dataValue")
 
-                // Move to next message using the total message size
-                index += totalMessageSize
+                index += totalMessageSize // Move to the next message
             }
         } catch (e: Exception) {
             Log.e("PARSER", "Error parsing packet: ${e.message}")
@@ -813,7 +712,6 @@ class MainActivity : ComponentActivity() {
                         val cadence = maxOf(0, message.value / 2)
                         bikeStatus = bikeStatus.copy(cadence = cadence)
                         parsedInfo.add("🏃 Cadence: $cadence RPM")
-                        Log.d("PROCESSOR", "Updated cadence: $cadence")
                         updateEbikeSpeedCadenceCharacteristic()
                     }
                     0x985B -> {
@@ -821,7 +719,6 @@ class MainActivity : ComponentActivity() {
                         val power = maxOf(0, message.value)
                         bikeStatus = bikeStatus.copy(humanPower = power)
                         parsedInfo.add("🦵 Human Power: ${power}W")
-                        Log.d("PROCESSOR", "Updated human power: $power")
                         updateCyclingPowerMeasurementCharacteristic()
                     }
                     0x985D -> {
@@ -829,15 +726,12 @@ class MainActivity : ComponentActivity() {
                         val power = maxOf(0, message.value)
                         bikeStatus = bikeStatus.copy(motorPower = power)
                         parsedInfo.add("⚙️ Motor Power: ${power}W")
-                        Log.d("PROCESSOR", "Updated motor power: $power")
-                        // No direct standard BLE characteristic for motor power, could be part of custom service
                     }
                     0x982D -> {
                         // Speed - divide by 100 for km/h
                         val speed = maxOf(0.0, message.value / 100.0)
                         bikeStatus = bikeStatus.copy(speed = speed)
                         parsedInfo.add("🚀 Speed: ${String.format("%.1f", speed)} km/h")
-                        Log.d("PROCESSOR", "Updated speed: $speed")
                         updateEbikeSpeedCadenceCharacteristic()
                     }
                     0x8088 -> {
@@ -849,19 +743,13 @@ class MainActivity : ComponentActivity() {
                         previousBattery = newBattery
                         bikeStatus = bikeStatus.copy(battery = newBattery)
                         parsedInfo.add("🔋 Battery: ${newBattery}%")
-                        Log.d("PROCESSOR", "Updated battery: $newBattery")
                         updateEbikeBatteryCharacteristic()
                     }
                     0x9809 -> {
                         // Assist Mode - use value directly
                         val newAssistMode = message.value.coerceIn(0, 10)
-                        if (newAssistMode != previousAssistMode && previousAssistMode != 0) {
-                            sendBatteryNotification("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
-                        }
-                        previousAssistMode = newAssistMode
                         bikeStatus = bikeStatus.copy(assistMode = newAssistMode)
                         parsedInfo.add("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
-                        Log.d("PROCESSOR", "Updated assist mode: $newAssistMode")
                         updateEbikeAssistModeCharacteristic()
                     }
                     else -> {
@@ -883,12 +771,57 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun disconnect() {
-        if (hasPermissions()) {
-            bluetoothGatt?.disconnect()
-            bluetoothGatt?.close()
-            bluetoothGatt = null
-            stopAdvertising() // Stop advertising when disconnecting from bike
-            closeGattServer() // Close GATT server when disconnecting
+        Log.i("APP_STATE", "Disconnect button pressed.") // Info log for major action
+
+        if (!hasPermissions()) {
+            Log.e("DISCONNECT", "Cannot disconnect: Required Bluetooth permissions are missing.")
+            runOnUiThread {
+                connectionStatus = "Disconnected (Permissions missing)"
+            }
+            return
+        }
+
+        if (bluetoothGatt == null) {
+            Log.w("DISCONNECT", "bluetoothGatt was already null. No active GATT connection to close.")
+            runOnUiThread {
+                connectionStatus = "Disconnected"
+            }
+        } else {
+            try {
+                bluetoothGatt?.disconnect()
+                bluetoothGatt?.close()
+                bluetoothGatt = null
+                runOnUiThread {
+                    connectionStatus = "Disconnected"
+                }
+                Log.i("DISCONNECT", "Successfully disconnected GATT from bike.")
+            } catch (e: Exception) {
+                Log.e("DISCONNECT", "Error closing GATT connection: ${e.message}")
+                runOnUiThread {
+                    connectionStatus = "Disconnect Error: ${e.message}"
+                }
+            }
+        }
+
+        // Clean up advertising and GATT server regardless
+        try {
+            stopAdvertising()
+            Log.i("APP_STATE", "BLE advertising stopped.")
+        } catch (e: Exception) {
+            Log.e("ADVERTISER", "Error stopping advertising on disconnect: ${e.message}")
+        }
+
+        try {
+            closeGattServer()
+            Log.i("APP_STATE", "GATT server closed.")
+        } catch (e: Exception) {
+            Log.e("GATT_SERVER", "Error closing GATT server on disconnect: ${e.message}")
+        }
+
+        runOnUiThread {
+            bikeData = "No data"
+            rawHexData = "No data"
+            bikeStatus = BikeStatus()
         }
     }
 
