@@ -99,7 +99,7 @@ Built with:
 - Android Bluetooth LE APIs
 
 - CLAUDE.ai / Gemini (better!) / chatgpt etc.
-- I found it best to reset the chat for each incremental code change. Remove uneeded debugging and functions as soon as possible. Keep code size small. Keep chat purpose small and contained, with clear end goal (add feature X), start a new chat once finished, pasting updated code in. 
+- I found it best to reset the chat for each incremental code change. Remove unneeded debugging and functions as soon as possible. Keep code size small. Keep chat purpose small and contained, with clear end goal (add feature X), start a new chat once finished, pasting updated code in. 
 
 ## License
 
