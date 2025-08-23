@@ -93,6 +93,7 @@ class MainActivity : ComponentActivity() {
     private var bikeData by mutableStateOf("No data")
     private var rawHexData by mutableStateOf("No data")
     private var manualMacAddress by mutableStateOf(BOSCH_BIKE_MAC)
+    private var bondedDevice by mutableStateOf<BluetoothDevice?>(null)
     
     // Live bike status
     private var bikeStatus by mutableStateOf(BikeStatus())
@@ -169,6 +170,32 @@ class MainActivity : ComponentActivity() {
             }
 
             Spacer(modifier = Modifier.height(16.dp))
+
+            bondedDevice?.let { device ->
+                Text(
+                    text = "Bonded Device:",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    onClick = { if (connectionStatus != "Connected") connectToDevice(device) }
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = device.name ?: "Unknown Device",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Text(
+                            text = device.address,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+            }
 
             // Control Buttons
             Row(
@@ -386,7 +413,21 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        val bondedDevices = bluetoothAdapter.bondedDevices
+        val device = bondedDevices.firstOrNull {
+            it.address.equals(manualMacAddress, true) ||
+            it.name.equals("smart system eBike", true)
+        }
+
+        if (device != null) {
+            bondedDevice = device
+            connectionStatus = "Connecting to bonded device..."
+            connectToDevice(device)
+            return
+        }
+
         connectionStatus = "Scanning for devices..."
+        bondedDevice = null
         scanResults.clear()
         startGeneralScan()
     }
