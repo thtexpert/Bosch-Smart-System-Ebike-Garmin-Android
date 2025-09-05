@@ -31,6 +31,7 @@ import androidx.core.app.NotificationManagerCompat
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.*
+import android.os.SystemClock
 
 data class BoschMessage(
     val messageId: Int,
@@ -81,6 +82,28 @@ class MainActivity : ComponentActivity() {
     private val EBike_BATTERY_CHAR_UUID: UUID = UUID.fromString("00002AF2-0000-1000-8000-00805f9b34fb") // Example Custom UUID
     private val EBike_ASSIST_MODE_CHAR_UUID: UUID = UUID.fromString("00002AF3-0000-1000-8000-00805f9b34fb") // Example Custom UUID
 
+    // Standard Cycling Speed & Cadence (CSC)
+    private val CSC_SERVICE_UUID = UUID.fromString("00001816-0000-1000-8000-00805f9b34fb")
+    private val CSC_MEASUREMENT_CHAR_UUID = UUID.fromString("00002A5B-0000-1000-8000-00805f9b34fb")
+    private val CSC_FEATURE_CHAR_UUID = UUID.fromString("00002A5C-0000-1000-8000-00805f9b34fb")
+    private val CSC_SENSOR_LOCATION_CHAR_UUID = UUID.fromString("00002A5D-0000-1000-8000-00805f9b34fb")
+
+    // CSC chars
+    private var cscMeasurementCharacteristic: BluetoothGattCharacteristic? = null
+    private var cscFeatureCharacteristic: BluetoothGattCharacteristic? = null
+    private var cscSensorLocationCharacteristic: BluetoothGattCharacteristic? = null
+
+    // UI toggles
+    private var broadcastCadenceAsCSC by mutableStateOf(false)
+    private var broadcastBatteryAsCSC by mutableStateOf(false) // mutually exclusive with ^
+    // Power meter toggle
+    private var broadcastPowerAsCPS by mutableStateOf(false)
+
+    // CSC running state
+    private var cscCumulativeCrankRevs = 0
+    private var cscLastEventTime1024 = 0 // uint16 in 1/1024 s
+    private var cscLastTimestampMs = 0L
+
     private var cyclingPowerMeasurementCharacteristic: BluetoothGattCharacteristic? = null
     private var ebikeSpeedCadenceCharacteristic: BluetoothGattCharacteristic? = null
     private var ebikeBatteryCharacteristic: BluetoothGattCharacteristic? = null
@@ -100,6 +123,12 @@ class MainActivity : ComponentActivity() {
 
     // Previous values for change detection - used for battery notification
     private var previousBattery = 0
+
+    private fun resetCscCounters() {
+    cscCumulativeCrankRevs = 0
+    cscLastEventTime1024 = 0
+    cscLastTimestampMs = 0L
+    }
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -246,6 +275,50 @@ class MainActivity : ComponentActivity() {
                         Text("Connect to This MAC")
                     }
                 }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Broadcast options", style = MaterialTheme.typography.titleMedium)
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = broadcastCadenceAsCSC,
+                    onCheckedChange = { checked ->
+                    broadcastCadenceAsCSC = checked
+                    if (checked) broadcastBatteryAsCSC = false
+                    resetCscCounters()
+                    restartAdvertising()
+                    }
+                )
+                Text("Cadence → BLE cadence sensor")
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = broadcastBatteryAsCSC,
+                    onCheckedChange = { checked ->
+                    broadcastBatteryAsCSC = checked
+                    if (checked) broadcastCadenceAsCSC = false
+                    resetCscCounters()
+                    restartAdvertising()
+                    }
+                )
+                Text("Battery % → BLE cadence sensor (hack)")
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = broadcastPowerAsCPS,
+                    onCheckedChange = { checked ->
+                    broadcastPowerAsCPS = checked
+                    restartAdvertising()
+                    }
+                )
+                Text("Power → BLE power meter")
+                }
+            }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -754,6 +827,7 @@ class MainActivity : ComponentActivity() {
                         bikeStatus = bikeStatus.copy(cadence = cadence)
                         parsedInfo.add("🏃 Cadence: $cadence RPM")
                         updateEbikeSpeedCadenceCharacteristic()
+                        updateCscMeasurementCharacteristic()
                     }
                     0x985B -> {
                         // Human Power - use value directly
@@ -785,6 +859,7 @@ class MainActivity : ComponentActivity() {
                         bikeStatus = bikeStatus.copy(battery = newBattery)
                         parsedInfo.add("🔋 Battery: ${newBattery}%")
                         updateEbikeBatteryCharacteristic()
+                        updateCscMeasurementCharacteristic()
                     }
                     0x9809 -> {
                         // Assist Mode - use value directly
@@ -1026,9 +1101,48 @@ class MainActivity : ComponentActivity() {
         )
         ebikeDataService.addCharacteristic(ebikeAssistModeCharacteristic)
 
-
         bluetoothGattServer?.addService(ebikeDataService)
         Log.d("GATT_SERVER", "eBike Data Service added")
+
+        // --- Cycling Speed & Cadence (CSC): crank-only sensor ---
+        val cscService = BluetoothGattService(CSC_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+
+        // Measurement (NOTIFY)
+        cscMeasurementCharacteristic = BluetoothGattCharacteristic(
+        CSC_MEASUREMENT_CHAR_UUID,
+        BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+        BluetoothGattCharacteristic.PERMISSION_READ
+        )
+        cscMeasurementCharacteristic?.addDescriptor(
+        BluetoothGattDescriptor(
+            UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"),
+            BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+        )
+        )
+        cscService.addCharacteristic(cscMeasurementCharacteristic)
+
+        // Feature (READ) — 0x0002 = Crank Revolution Data Supported
+        cscFeatureCharacteristic = BluetoothGattCharacteristic(
+        CSC_FEATURE_CHAR_UUID,
+        BluetoothGattCharacteristic.PROPERTY_READ,
+        BluetoothGattCharacteristic.PERMISSION_READ
+        ).apply {
+        value = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(0x0002).array()
+        }
+        cscService.addCharacteristic(cscFeatureCharacteristic)
+
+        // Sensor Location (READ) — 0x0E = Left Crank (pick any sensible)
+        cscSensorLocationCharacteristic = BluetoothGattCharacteristic(
+        CSC_SENSOR_LOCATION_CHAR_UUID,
+        BluetoothGattCharacteristic.PROPERTY_READ,
+        BluetoothGattCharacteristic.PERMISSION_READ
+        ).apply { value = byteArrayOf(0x0E.toByte()) }
+        cscService.addCharacteristic(cscSensorLocationCharacteristic)
+
+        bluetoothGattServer?.addService(cscService)
+        Log.d("GATT_SERVER", "CSC Service added")
+
     }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
@@ -1076,6 +1190,17 @@ class MainActivity : ComponentActivity() {
                     bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
                     Log.d("GATT_SERVER", "Read request for eBike Assist Mode. Value: ${bikeStatus.assistMode}")
                 }
+                CSC_MEASUREMENT_CHAR_UUID -> {
+                    // Push latest CSC value
+                    updateCscMeasurementCharacteristic()
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, cscMeasurementCharacteristic?.value)
+                }
+                CSC_FEATURE_CHAR_UUID -> {
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, cscFeatureCharacteristic?.value)
+                }
+                CSC_SENSOR_LOCATION_CHAR_UUID -> {
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, cscSensorLocationCharacteristic?.value)
+                }
                 else -> {
                     bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
                     Log.w("GATT_SERVER", "Unknown characteristic read request for ${characteristic.uuid}")
@@ -1121,32 +1246,38 @@ class MainActivity : ComponentActivity() {
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
+    private fun restartAdvertising() {
+        stopAdvertising()
+        startAdvertising()
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
     private fun startAdvertising() {
-        if (!hasPermissions()) {
-            Log.e("ADVERTISER", "Missing permissions for advertising")
-            return
-        }
-        if (bluetoothLeAdvertiser == null) {
-            Log.e("ADVERTISER", "BluetoothLeAdvertiser not initialized")
-            return
-        }
+        if (!hasPermissions() || bluetoothLeAdvertiser == null) return
 
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setConnectable(true)
-            .setTimeout(0) // Advertise indefinitely
+            .setTimeout(0)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .build()
 
-        val data = AdvertiseData.Builder()
+        val dataBuilder = AdvertiseData.Builder()
             .setIncludeDeviceName(true)
-            .addServiceUuid(ParcelUuid(CYCLING_POWER_SERVICE_UUID))
-            .addServiceUuid(ParcelUuid(EBike_DATA_SERVICE_UUID)) // Add your custom service UUID
-            .build()
+            .addServiceUuid(ParcelUuid(EBike_DATA_SERVICE_UUID)) // keep your custom service visible
+
+        if (broadcastPowerAsCPS) {
+            dataBuilder.addServiceUuid(ParcelUuid(CYCLING_POWER_SERVICE_UUID))
+        }
+        if (broadcastCadenceAsCSC || broadcastBatteryAsCSC) {
+            dataBuilder.addServiceUuid(ParcelUuid(CSC_SERVICE_UUID))
+        }
+
+        val data = dataBuilder.build()
 
         try {
             bluetoothLeAdvertiser?.startAdvertising(settings, data, advertiseCallback)
-            Log.d("ADVERTISER", "Advertising started")
+            Log.d("ADVERTISER", "Advertising started (CPS=$broadcastPowerAsCPS, CSC=${broadcastCadenceAsCSC || broadcastBatteryAsCSC})")
         } catch (e: Exception) {
             Log.e("ADVERTISER", "Failed to start advertising: ${e.message}")
         }
@@ -1198,6 +1329,8 @@ class MainActivity : ComponentActivity() {
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun updateCyclingPowerMeasurementCharacteristic() {
+        if (!broadcastPowerAsCPS) return
+
         val characteristic = cyclingPowerMeasurementCharacteristic ?: return
         val power = bikeStatus.humanPower // Power in Watts
 
@@ -1263,6 +1396,39 @@ class MainActivity : ComponentActivity() {
         bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false)
         Log.d("GATT_SERVER", "Notified eBike Assist Mode: ${bikeStatus.assistMode}")
     }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun updateCscMeasurementCharacteristic() {
+    if (!(broadcastCadenceAsCSC || broadcastBatteryAsCSC)) return
+    val characteristic = cscMeasurementCharacteristic ?: return
+
+    val rpm = when {
+        broadcastCadenceAsCSC -> bikeStatus.cadence
+        broadcastBatteryAsCSC -> bikeStatus.battery // 0–100 “RPM” as a hack
+        else -> 0
+    }.coerceAtLeast(0)
+
+    val nowMs = SystemClock.elapsedRealtime()
+    if (cscLastTimestampMs == 0L) cscLastTimestampMs = nowMs
+    val dt = (nowMs - cscLastTimestampMs) / 1000.0
+    val deltaRevs = (rpm / 60.0) * dt
+    cscCumulativeCrankRevs = (cscCumulativeCrankRevs + deltaRevs.toInt()).coerceAtLeast(0)
+    cscLastEventTime1024 = ((cscLastEventTime1024 + (dt * 1024.0).toInt()) and 0xFFFF)
+    cscLastTimestampMs = nowMs
+
+    val flags = 0x02 // crank-present only
+    val payload = ByteBuffer.allocate(1 + 2 + 2).order(ByteOrder.LITTLE_ENDIAN)
+        .put(flags.toByte())
+        .putShort(cscCumulativeCrankRevs.toShort())
+        .putShort(cscLastEventTime1024.toShort())
+        .array()
+
+    characteristic.value = payload
+    bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false)
+    Log.d("GATT_SERVER", "CSC notify crank-only rpm=$rpm, cumRevs=$cscCumulativeCrankRevs")
+    }
+
+
     //endregion
 
     override fun onDestroy() {
