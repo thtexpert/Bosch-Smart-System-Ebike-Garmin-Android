@@ -102,8 +102,7 @@ Built with:
 - I found it best to reset the chat for each incremental code change. Remove unneeded debugging and functions as soon as possible. Keep code size small. Keep chat purpose small and contained, with clear end goal (add feature X), start a new chat once finished, pasting updated code in. 
 
 ## License
-
-MIT License - feel free to modify and distribute.
+This project is licensed under the GNU GPL v3.0 - see the LICENSE file for details.
 
 ---
 
