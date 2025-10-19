@@ -17,6 +17,14 @@ except ImportError:
     print("Note: pandas not available, CSV export will use basic format")
 
 class BLEMessageAnalyzer:
+    data_ids   = {  '985A' :    'Cadence' ,     \
+                    '985B' :    'HumanPower' ,  \
+                    '985D' :    'MotorPower' ,  \
+                    '982D' :    'Speed' ,       \
+                    '8088' :    'Battery' ,     \
+                    '9809' :    'AssistMode' ,  \
+                    }
+
     def __init__(self):
         self.messages = []
         self.data_by_id = defaultdict(list)
@@ -69,90 +77,36 @@ class BLEMessageAnalyzer:
             
         length = int(bytes_data[1], 16)
         
-        if length == 2:
-            # Format: 30-02-[ID]-[VALUE]
-            if len(bytes_data) >= 4:
-                data_id = bytes_data[2]
-                value = int(bytes_data[3], 16)  # Only last byte is value
+        if len(bytes_data) >= 4:
+            data_id = bytes_data[2] + bytes_data[3]
+            if len(bytes_data) == 4:
                 return {
-                    'type': '30-02',
+                    'type': '30',
                     'data_id': data_id,
-                    'data_type': None,
-                    'value': value,
+                    'data_type': 8,
+                    'value': 0,
                     'raw': message
                 }
                 
-        elif length >= 4:
-            # Check for special field 30-07-98-2D-08-...
-            if (length == 7 and len(bytes_data) >= 8 and 
-                bytes_data[2] == '98' and bytes_data[3] == '2D' and bytes_data[4] == '08'):
-                
-                # Special handling: 30-07-98-2D-08-AA-BB-CC-DD
-                # Treat AA-BB-CC-DD as 32-bit data
-                value_bytes = bytes_data[5:9]  # AA, BB, CC, DD (4 bytes)
-                
-                if len(value_bytes) == 4:
-                    # Try both little-endian and big-endian interpretations
-                    # Little endian: DD-CC-BB-AA
-                    value_le = (int(value_bytes[0], 16) +
-                               (int(value_bytes[1], 16) << 8) +
-                               (int(value_bytes[2], 16) << 16) +
-                               (int(value_bytes[3], 16) << 24))
-                    
-                    # Big endian: AA-BB-CC-DD
-                    value_be = ((int(value_bytes[0], 16) << 24) +
-                               (int(value_bytes[1], 16) << 16) +
-                               (int(value_bytes[2], 16) << 8) +
-                               int(value_bytes[3], 16))
-                    
-                    # Use little endian by default (more common in embedded systems)
-                    # But store both for comparison
-                    value = value_le
-                    
-                    return {
-                        'type': f'30-{length:02d}',
-                        'data_id': '982D',  # Fixed ID for this special field
-                        'data_type': '08',
-                        'value': value,
-                        'value_le': value_le,  # Little endian interpretation
-                        'value_be': value_be,  # Big endian interpretation
-                        'raw_bytes': '-'.join(value_bytes),  # Raw bytes for debugging
-                        'raw': message
-                    }
+            elif len(bytes_data) > 4:
+                data_type = int(bytes_data[4], 16)
+                values = 0
+                value_bytes = bytes_data[5:len(bytes_data)]
+                if data_id == '321 9818' and data_type == 8:
+                    values = self.parse_for_int32( value_bytes)
+                    #values = self.parse_for_varint( value_bytes)
                 else:
-                    # Fallback if not exactly 4 bytes
-                    value = 0
-                    for i, byte in enumerate(value_bytes):
-                        value += int(byte, 16) << (8 * i)
-                    
-                    return {
-                        'type': f'30-{length:02d}',
-                        'data_id': '982D',
-                        'data_type': '08',
-                        'value': value,
-                        'raw': message
-                    }
-            
-            else:
-                # Standard handling: only last byte is the value
-                if len(bytes_data) >= 6:
-                    # Everything except the last byte is identifier/metadata
-                    data_id_bytes = bytes_data[2:-1]  # All bytes except last
-                    data_id = ''.join(data_id_bytes)
-                    
-                    # Extract data type (usually the byte before the value)
-                    data_type = bytes_data[-2] if len(bytes_data) >= 6 else None
-                    
-                    # Value is always the last byte
-                    value = int(bytes_data[-1], 16)
-                    
-                    return {
-                        'type': f'30-{length:02d}',
-                        'data_id': data_id,
-                        'data_type': data_type,
-                        'value': value,
-                        'raw': message
-                    }
+                    if data_type == 8:
+                        print(f"      {bytes_data} with data_id {data_id}: parse_for_varint in {value_bytes}  :")
+                        values = self.parse_for_varint( value_bytes)
+                return {
+                    'type': f'30',
+                    'data_id': data_id,  # Fixed ID for this special field
+                    'data_type': data_type,
+                    'value': values,
+                    'raw': message
+                }
+                
                 
         # For any other format, capture what we can
         return {
@@ -162,6 +116,45 @@ class BLEMessageAnalyzer:
             'value': 0,
             'raw': message
         }
+    
+    def parse_for_varint(self, bytes_data):
+        single_value = -9
+        match len(bytes_data):
+            case 0:
+                # no data means value 0
+                single_value =  0
+            case _:
+                single_value = int(bytes_data[0], 16) & 127
+                i = 1
+                while (i < len(bytes_data)) and ((int(bytes_data[i-1], 16) & 128) == 128):
+                    print(f"     single_value {single_value} i {i} {bytes_data} len {len(bytes_data)}")
+                    single_value = single_value + ((int(bytes_data[i], 16) & 127 ) <<  (7 * i))
+                    i = i + 1
+                print(f"     single_value {single_value} i {i} {bytes_data} len {len(bytes_data)}")
+        
+        return single_value
+                
+    def parse_for_int32(self, bytes_data):
+        single_value = -9
+        match len(bytes_data):
+            case 0:
+                # no data means value 0
+                single_value =  0
+            case 1:
+                # byte onlya
+                single_value =  int(bytes_data[0], 16) << 0
+            case 2:
+                single_value =  (int(bytes_data[0], 16) << 0)  + \
+                                (int(bytes_data[1], 16) << 8) 
+            case 4:
+                # e.g. data_type 9818 has little endian 32 bit decoding in 4 byte
+                single_value =  (int(bytes_data[0], 16) << 0)  + \
+                                (int(bytes_data[1], 16) << 8)  + \
+                                (int(bytes_data[2], 16) << 16) + \
+                                (int(bytes_data[3], 16) << 24)
+            case _:
+                single_value = -8        
+        return single_value
     
     def add_data(self, hex_data):
         """Add hex data line and parse all messages in it"""
@@ -298,7 +291,10 @@ class BLEMessageAnalyzer:
             with open(filename, 'w') as f:
                 f.write("type,data_id,data_type,value,raw\n")
                 for msg in self.messages:
-                    f.write(f"{msg['type']},{msg['data_id']},{msg['data_type']},{msg['value']},{msg['raw']}\n")
+                    id = msg['data_id']
+                    if id in self.data_ids:
+                        id = self.data_ids[msg['data_id']]
+                    f.write(f"{msg['type']},{id},{msg['data_type']},{msg['value']},\'{msg['raw']}\n")
         print(f"Data exported to {filename}")
 
 # Example usage
@@ -306,7 +302,8 @@ if __name__ == "__main__":
     import sys
     
     analyzer = BLEMessageAnalyzer()
-    
+    if 'idlelib' in sys.modules:
+        sys.argv = [sys.argv[0], "C:\\Users\\anton\\Documents\\Ebike\\GitHub\\logs\\Log 2025-10-17 07_29_04large_hex.txt"]
     if len(sys.argv) > 1:
         # Load data from file
         filename = sys.argv[1]
