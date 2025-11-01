@@ -31,8 +31,10 @@ def extract_hex_messages(input_file, output_file):
     
     # Pattern to match lines with hex messages
     # Looks for: "(0x) [hex-data]" received
-    pattern = r'"?\(0x\)\s+([A-F0-9\-]+)"\s+received'
-    
+    #pattern = r'"?\(0x\)\s+([A-F0-9\-]+)"\s+received'
+    #07:29:12.441
+    pattern = r'A?([0-9]+):([0-9]+):([0-9]+).([0-9]+)."?\(0x\)\s+([A-F0-9\-]+)"\s+received'
+    #pattern = r'A?([0-9\:\.]+)."?\(0x\)\s+([A-F0-9\-]+)"\s+received'
     hex_messages = []
     
     try:
@@ -40,8 +42,15 @@ def extract_hex_messages(input_file, output_file):
             for line_num, line in enumerate(file, 1):
                 match = re.search(pattern, line, re.IGNORECASE)
                 if match:
-                    hex_data = match.group(1)
+                    time_hour = match.group(1)
+                    time_min = match.group(2)
+                    time_sec = match.group(3)
+                    time_milli = match.group(4)
+                    tt =  int(time_milli) + 1000 * int(time_sec) + 1000 * 60 * int(time_min) +  1000 * 60 * 60 * int(time_hour)
+                    hex_data = match.group(5)
+                    print(f"{tt}"  + ", " + hex_data)
                     hex_messages.append(hex_data)
+                    #hex_messages.append(f"{tt}" + ", " + hex_data)
                     if len(hex_messages) <= 10:  # Only show first 10 to avoid spam
                         print(f"Line {line_num}: Found hex message")
                     elif len(hex_messages) == 11:

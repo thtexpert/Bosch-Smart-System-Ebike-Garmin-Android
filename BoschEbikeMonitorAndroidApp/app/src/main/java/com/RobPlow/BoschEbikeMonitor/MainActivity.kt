@@ -47,12 +47,14 @@ data class BikeStatus(
     var speed: Double = 0.0,
     var battery: Int = 0,
     var assistMode: Int = 0,
+    var totalDist: Double = 0.0,
+    var totalBattery: Double = 0.0,
 )
 
 class MainActivity : ComponentActivity() {
 
     // Your bike's specific MAC address - UPDATE THIS!
-    private val BOSCH_BIKE_MAC = "00:04:63:A0:F8:AC" // Replace with your bike's MAC address
+    private val BOSCH_BIKE_MAC = "A4:0D:BC:62:5E:96" // Replace with your bike's MAC address
 
     // Bosch eBike Service UUIDs
     private val BOSCH_STATUS_SERVICE_UUID = UUID.fromString("00000010-eaa2-11e9-81b4-2a2ae2dbcce4")
@@ -67,8 +69,8 @@ class MainActivity : ComponentActivity() {
     private var bluetoothGatt: BluetoothGatt? = null
 
     // BLE Advertising and GATT Server
-    private var bluetoothLeAdvertiser: BluetoothLeAdvertiser? = null
-    private var bluetoothGattServer: BluetoothGattServer? = null
+//    private var bluetoothLeAdvertiser: BluetoothLeAdvertiser? = null
+//    private var bluetoothGattServer: BluetoothGattServer? = null
 
     // Standard BLE Service UUIDs for Power Meter and eBike
     private val CYCLING_POWER_SERVICE_UUID: UUID = UUID.fromString("00001814-0000-1000-8000-00805f9b34fb")
@@ -93,11 +95,6 @@ class MainActivity : ComponentActivity() {
     private var cscFeatureCharacteristic: BluetoothGattCharacteristic? = null
     private var cscSensorLocationCharacteristic: BluetoothGattCharacteristic? = null
 
-    // UI toggles
-    private var broadcastCadenceAsCSC by mutableStateOf(false)
-    private var broadcastBatteryAsCSC by mutableStateOf(false) // mutually exclusive with ^
-    // Power meter toggle
-    private var broadcastPowerAsCPS by mutableStateOf(false)
 
     // CSC running state
     private var cscCumulativeCrankRevs = 0
@@ -117,7 +114,7 @@ class MainActivity : ComponentActivity() {
     private var rawHexData by mutableStateOf("No data")
     private var manualMacAddress by mutableStateOf(BOSCH_BIKE_MAC)
     private var bondedDevice by mutableStateOf<BluetoothDevice?>(null)
-    
+
     // Live bike status
     private var bikeStatus by mutableStateOf(BikeStatus())
 
@@ -136,10 +133,10 @@ class MainActivity : ComponentActivity() {
         val allGranted = permissions.values.all { it }
         if (allGranted) {
             initializeBluetooth()
-            createNotificationChannel()
+//            createNotificationChannel()
             // Initialize BLE advertising and GATT server after permissions are granted
-            initializeGattServer()
-            startAdvertising()
+//            initializeGattServer()
+//            startAdvertising()
         }
     }
 
@@ -163,7 +160,7 @@ class MainActivity : ComponentActivity() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp),
+                .padding(10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
@@ -171,7 +168,7 @@ class MainActivity : ComponentActivity() {
                 style = MaterialTheme.typography.headlineMedium
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             // Connection Status
             Card(
@@ -185,7 +182,7 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp)
+                    modifier = Modifier.padding(10.dp)
                 ) {
                     Text(
                         text = "Status: $connectionStatus",
@@ -196,9 +193,49 @@ class MainActivity : ComponentActivity() {
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
+                Spacer(modifier = Modifier.height(10.dp))
+
+                if (connectionStatus == "Connected") {
+                    // Live Status Card
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp)
+                        ) {
+                            Text(
+                                text = "🚴 Live Bike Status",
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("⚡ Total Distance: ${String.format("%.1f", bikeStatus.totalDist)} km", style = MaterialTheme.typography.bodyMedium)
+                                    Text("⚡ Assist: ${getAssistModeName(bikeStatus.assistMode)}", style = MaterialTheme.typography.bodyMedium)
+                                    Text("🦵 Human: ${bikeStatus.humanPower}W", style = MaterialTheme.typography.bodyMedium)
+                                    Text("🔋 Battery SoC: ${bikeStatus.battery}%", style = MaterialTheme.typography.bodyMedium)
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("⚡ Battery Delivered:  ${String.format("%.2f", bikeStatus.totalBattery)} kWh", style = MaterialTheme.typography.bodyMedium)
+                                    Text("🚀 Speed: ${String.format("%.1f", bikeStatus.speed)} km/h", style = MaterialTheme.typography.bodyMedium)
+                                    Text("🏃 Cadence: ${bikeStatus.cadence} RPM", style = MaterialTheme.typography.bodyMedium)
+                                    Text("⚙️ Motor: ${bikeStatus.motorPower}W", style = MaterialTheme.typography.bodyMedium)
+                                }
+
+                            }
+                        }
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             bondedDevice?.let { device ->
                 Text(
@@ -223,7 +260,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(10.dp))
             }
 
             // Control Buttons
@@ -246,13 +283,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             Card(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp)
+                    modifier = Modifier.padding(10.dp)
                 ) {
                     Text(
                         text = "Direct Connection:",
@@ -276,92 +313,11 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-
-            Spacer(Modifier.height(16.dp))
-            Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Broadcast options", style = MaterialTheme.typography.titleMedium)
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = broadcastCadenceAsCSC,
-                    onCheckedChange = { checked ->
-                    broadcastCadenceAsCSC = checked
-                    if (checked) broadcastBatteryAsCSC = false
-                    resetCscCounters()
-                    restartAdvertising()
-                    }
-                )
-                Text("Cadence → BLE cadence sensor")
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = broadcastBatteryAsCSC,
-                    onCheckedChange = { checked ->
-                    broadcastBatteryAsCSC = checked
-                    if (checked) broadcastCadenceAsCSC = false
-                    resetCscCounters()
-                    restartAdvertising()
-                    }
-                )
-                Text("Battery % → BLE cadence sensor (hack)")
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = broadcastPowerAsCPS,
-                    onCheckedChange = { checked ->
-                    broadcastPowerAsCPS = checked
-                    restartAdvertising()
-                    }
-                )
-                Text("Power → BLE power meter")
-                }
-            }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            if (connectionStatus == "Connected") {
-                // Live Status Card
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp)
-                    ) {
-                        Text(
-                            text = "🚴 Live Bike Status",
-                            style = MaterialTheme.typography.titleLarge
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("🔋 Battery: ${bikeStatus.battery}%", style = MaterialTheme.typography.titleMedium)
-                                Text("⚡ Assist: ${getAssistModeName(bikeStatus.assistMode)}", style = MaterialTheme.typography.titleMedium)
-                                Text("🦵 Human: ${bikeStatus.humanPower}W", style = MaterialTheme.typography.bodyMedium)
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("🚀 Speed: ${String.format("%.1f", bikeStatus.speed)} km/h", style = MaterialTheme.typography.titleMedium)
-                                Text("🏃 Cadence: ${bikeStatus.cadence} RPM", style = MaterialTheme.typography.bodyMedium)
-                                Text("⚙️ Motor: ${bikeStatus.motorPower}W", style = MaterialTheme.typography.bodyMedium)
-                            }
-                        }
-                    }
-                }
-            }
+            Spacer(Modifier.height(10.dp))
 
             // Show scan results for debugging
             if (scanResults.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     text = "Found Devices:",
                     style = MaterialTheme.typography.titleMedium
@@ -400,16 +356,23 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(10.dp)) {
+                Text("Broadcast options", style = MaterialTheme.typography.titleMedium)
+            }
+            }
+
         }
     }
 
     private fun getAssistModeName(mode: Int): String {
         return when (mode) {
-            0 -> "Off"
-            1 -> "Eco"
-            2 -> "Tour"
-            3 -> "Sport"
-            4 -> "Turbo"
+            0 -> "OFF"
+            1 -> "ECO"
+            2 -> "TOUR+"
+            3 -> "SPORT"
+            4 -> "TURBO"
             else -> "Mode $mode"
         }
     }
@@ -421,7 +384,6 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.BLUETOOTH_CONNECT,
                 Manifest.permission.BLUETOOTH_ADVERTISE, // Added for BLE advertising
                 Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.POST_NOTIFICATIONS
             )
         } else {
             arrayOf(
@@ -437,7 +399,7 @@ class MainActivity : ComponentActivity() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
         bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
-        bluetoothLeAdvertiser = bluetoothAdapter.bluetoothLeAdvertiser // Initialize advertiser
+//        bluetoothLeAdvertiser = bluetoothAdapter.bluetoothLeAdvertiser // Initialize advertiser
     }
 
     private fun createNotificationChannel() {
@@ -736,8 +698,8 @@ class MainActivity : ComponentActivity() {
                     break
                 }
 
-                
-                if (index + 4 >= bytes.size) 
+
+                if (index + 4 >= bytes.size)
                     break
                 val messageId = (bytes[index + 2] shl 8) or bytes[index + 3] // Extract the message ID (2 bytes after start and length)
                 Log.d("PARSER", "Message ID: 0x${messageId.toString(16).uppercase()}")
@@ -748,7 +710,7 @@ class MainActivity : ComponentActivity() {
                 // Determine if there's a data type byte and data
                 var dataValue = 0
                 var dataType = 0
-                
+
                 // If message length is <= 2, the dataValue = 0
                 if (messageLength > 2) {
                     val dataTypeIndex = 4  // Position after start(1) + length(1) + messageId(2)
@@ -826,15 +788,15 @@ class MainActivity : ComponentActivity() {
                         val cadence = maxOf(0, message.value / 2)
                         bikeStatus = bikeStatus.copy(cadence = cadence)
                         parsedInfo.add("🏃 Cadence: $cadence RPM")
-                        updateEbikeSpeedCadenceCharacteristic()
-                        updateCscMeasurementCharacteristic()
+//                        updateEbikeSpeedCadenceCharacteristic()
+//                        updateCscMeasurementCharacteristic()
                     }
                     0x985B -> {
                         // Human Power - use value directly
                         val power = maxOf(0, message.value)
                         bikeStatus = bikeStatus.copy(humanPower = power)
                         parsedInfo.add("🦵 Human Power: ${power}W")
-                        updateCyclingPowerMeasurementCharacteristic()
+//                        updateCyclingPowerMeasurementCharacteristic()
                     }
                     0x985D -> {
                         // Motor Power - (Consider if you want to include motor power in BLE characteristics)
@@ -847,26 +809,40 @@ class MainActivity : ComponentActivity() {
                         val speed = maxOf(0.0, message.value / 100.0)
                         bikeStatus = bikeStatus.copy(speed = speed)
                         parsedInfo.add("🚀 Speed: ${String.format("%.1f", speed)} km/h")
-                        updateEbikeSpeedCadenceCharacteristic()
+//                        updateEbikeSpeedCadenceCharacteristic()
                     }
-                    0x8088 -> {
+                    0x80BC -> {
                         // Battery percentage
                         val newBattery = message.value.coerceIn(0, 100)
-                        if (newBattery != previousBattery && previousBattery != 0) {
-                            sendBatteryNotification("🔋 Battery: $newBattery%")
-                        }
+//                        if (newBattery != previousBattery && previousBattery != 0) {
+//                            sendBatteryNotification("🔋 Battery: $newBattery%")
+//                        }
                         previousBattery = newBattery
                         bikeStatus = bikeStatus.copy(battery = newBattery)
                         parsedInfo.add("🔋 Battery: ${newBattery}%")
-                        updateEbikeBatteryCharacteristic()
-                        updateCscMeasurementCharacteristic()
+//                        updateEbikeBatteryCharacteristic()
+//                        updateCscMeasurementCharacteristic()
                     }
                     0x9809 -> {
                         // Assist Mode - use value directly
                         val newAssistMode = message.value.coerceIn(0, 10)
                         bikeStatus = bikeStatus.copy(assistMode = newAssistMode)
                         parsedInfo.add("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
-                        updateEbikeAssistModeCharacteristic()
+  //                      updateEbikeAssistModeCharacteristic()
+                    }
+                    0x9818 -> {
+                        // total driven distance in km - use value directly
+                        val newtotalDist = message.value/1000.0
+                        bikeStatus = bikeStatus.copy(totalDist = newtotalDist)
+                        parsedInfo.add("⚡ Total Distance: ${newtotalDist}km")
+                        //                      updateEbikeAssistModeCharacteristic()
+                    }
+                    0x809C -> {
+                        // total supplied Energy from battery (kWh)
+                        val newtotalBattery= message.value/1000.0
+                        bikeStatus = bikeStatus.copy(totalBattery = newtotalBattery)
+                        parsedInfo.add("⚡ Total Distance: ${newtotalBattery}%")
+                        //                      updateEbikeAssistModeCharacteristic()
                     }
                     else -> {
                         // Unknown message ID
@@ -921,14 +897,14 @@ class MainActivity : ComponentActivity() {
 
         // Clean up advertising and GATT server regardless
         try {
-            stopAdvertising()
+            // stopAdvertising()
             Log.i("APP_STATE", "BLE advertising stopped.")
         } catch (e: Exception) {
             Log.e("ADVERTISER", "Error stopping advertising on disconnect: ${e.message}")
         }
 
         try {
-            closeGattServer()
+            // closeGattServer()
             Log.i("APP_STATE", "GATT server closed.")
         } catch (e: Exception) {
             Log.e("GATT_SERVER", "Error closing GATT server on disconnect: ${e.message}")
@@ -1011,139 +987,6 @@ class MainActivity : ComponentActivity() {
     }
     //endregion
 
-    //region BLE GATT Server and Advertising
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
-    private fun initializeGattServer() {
-        if (!hasPermissions()) {
-            Log.e("GATT_SERVER", "Missing permissions for GATT server")
-            return
-        }
-        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        bluetoothGattServer = bluetoothManager.openGattServer(this, gattServerCallback)
-        setupGattServices()
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
-    private fun setupGattServices() {
-        // Cycling Power Service
-        val cyclingPowerService = BluetoothGattService(CYCLING_POWER_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-
-        // Cycling Power Measurement Characteristic (NOTIFY)
-        cyclingPowerMeasurementCharacteristic = BluetoothGattCharacteristic(
-            CYCLING_POWER_MEASUREMENT_CHAR_UUID,
-            BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-            BluetoothGattCharacteristic.PERMISSION_READ
-        )
-        cyclingPowerMeasurementCharacteristic?.addDescriptor(
-            BluetoothGattDescriptor(
-                UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // Client Characteristic Configuration Descriptor
-                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
-            )
-        )
-        cyclingPowerService.addCharacteristic(cyclingPowerMeasurementCharacteristic)
-
-        // Cycling Power Feature Characteristic (READ) - Optional
-        cyclingPowerFeatureCharacteristic = BluetoothGattCharacteristic(
-            CYCLING_POWER_FEATURE_CHAR_UUID,
-            BluetoothGattCharacteristic.PROPERTY_READ,
-            BluetoothGattCharacteristic.PERMISSION_READ
-        )
-        // Set a default value for features (e.g., crank revolution measurement supported)
-        cyclingPowerFeatureCharacteristic?.value = byteArrayOf(0x02, 0x00) // Flags for "Crank Revolution Measurement Supported"
-        cyclingPowerService.addCharacteristic(cyclingPowerFeatureCharacteristic)
-
-        bluetoothGattServer?.addService(cyclingPowerService)
-        Log.d("GATT_SERVER", "Cycling Power Service added")
-
-        // Bosch eBike Data Service (Custom Service)
-        val ebikeDataService = BluetoothGattService(EBike_DATA_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-
-        // eBike Speed and Cadence Characteristic (NOTIFY, READ)
-        ebikeSpeedCadenceCharacteristic = BluetoothGattCharacteristic(
-            EBike_SPEED_CADENCE_CHAR_UUID,
-            BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
-            BluetoothGattCharacteristic.PERMISSION_READ
-        )
-        ebikeSpeedCadenceCharacteristic?.addDescriptor(
-            BluetoothGattDescriptor(
-                UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // Client Characteristic Configuration Descriptor
-                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
-            )
-        )
-        ebikeDataService.addCharacteristic(ebikeSpeedCadenceCharacteristic)
-
-        // eBike Battery Characteristic (NOTIFY, READ)
-        ebikeBatteryCharacteristic = BluetoothGattCharacteristic(
-            EBike_BATTERY_CHAR_UUID,
-            BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
-            BluetoothGattCharacteristic.PERMISSION_READ
-        )
-        ebikeBatteryCharacteristic?.addDescriptor(
-            BluetoothGattDescriptor(
-                UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // Client Characteristic Configuration Descriptor
-                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
-            )
-        )
-        ebikeDataService.addCharacteristic(ebikeBatteryCharacteristic)
-
-        // eBike Assist Mode Characteristic (NOTIFY, READ)
-        ebikeAssistModeCharacteristic = BluetoothGattCharacteristic(
-            EBike_ASSIST_MODE_CHAR_UUID,
-            BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
-            BluetoothGattCharacteristic.PERMISSION_READ
-        )
-        ebikeAssistModeCharacteristic?.addDescriptor(
-            BluetoothGattDescriptor(
-                UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // Client Characteristic Configuration Descriptor
-                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
-            )
-        )
-        ebikeDataService.addCharacteristic(ebikeAssistModeCharacteristic)
-
-        bluetoothGattServer?.addService(ebikeDataService)
-        Log.d("GATT_SERVER", "eBike Data Service added")
-
-        // --- Cycling Speed & Cadence (CSC): crank-only sensor ---
-        val cscService = BluetoothGattService(CSC_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-
-        // Measurement (NOTIFY)
-        cscMeasurementCharacteristic = BluetoothGattCharacteristic(
-        CSC_MEASUREMENT_CHAR_UUID,
-        BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-        BluetoothGattCharacteristic.PERMISSION_READ
-        )
-        cscMeasurementCharacteristic?.addDescriptor(
-        BluetoothGattDescriptor(
-            UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"),
-            BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
-        )
-        )
-        cscService.addCharacteristic(cscMeasurementCharacteristic)
-
-        // Feature (READ) — 0x0002 = Crank Revolution Data Supported
-        cscFeatureCharacteristic = BluetoothGattCharacteristic(
-        CSC_FEATURE_CHAR_UUID,
-        BluetoothGattCharacteristic.PROPERTY_READ,
-        BluetoothGattCharacteristic.PERMISSION_READ
-        ).apply {
-        value = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
-            .putShort(0x0002).array()
-        }
-        cscService.addCharacteristic(cscFeatureCharacteristic)
-
-        // Sensor Location (READ) — 0x0E = Left Crank (pick any sensible)
-        cscSensorLocationCharacteristic = BluetoothGattCharacteristic(
-        CSC_SENSOR_LOCATION_CHAR_UUID,
-        BluetoothGattCharacteristic.PROPERTY_READ,
-        BluetoothGattCharacteristic.PERMISSION_READ
-        ).apply { value = byteArrayOf(0x0E.toByte()) }
-        cscService.addCharacteristic(cscSensorLocationCharacteristic)
-
-        bluetoothGattServer?.addService(cscService)
-        Log.d("GATT_SERVER", "CSC Service added")
-
-    }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice?, status: Int, newState: Int) {
@@ -1155,288 +998,18 @@ class MainActivity : ComponentActivity() {
                 Log.d("GATT_SERVER", "Device disconnected from GATT server: $deviceAddress")
             }
         }
-
-        override fun onCharacteristicReadRequest(device: BluetoothDevice?, requestId: Int, offset: Int, characteristic: BluetoothGattCharacteristic?) {
-            super.onCharacteristicReadRequest(device, requestId, offset, characteristic)
-            if (characteristic == null) {
-                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
-                return
-            }
-
-            when (characteristic.uuid) {
-                CYCLING_POWER_MEASUREMENT_CHAR_UUID -> {
-                    // Return current power data (0 if not available)
-                    val value = generateCyclingPowerMeasurement(bikeStatus.humanPower)
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
-                    Log.d("GATT_SERVER", "Read request for Power Measurement. Value: ${bikeStatus.humanPower}")
-                }
-                CYCLING_POWER_FEATURE_CHAR_UUID -> {
-                    // Features (already set during service creation)
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, characteristic.value)
-                    Log.d("GATT_SERVER", "Read request for Power Feature. Value: ${characteristic.value?.joinToString("-") { "%02X".format(it) }}")
-                }
-                EBike_SPEED_CADENCE_CHAR_UUID -> {
-                    val value = generateEbikeSpeedCadenceBytes(bikeStatus.speed, bikeStatus.cadence)
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
-                    Log.d("GATT_SERVER", "Read request for eBike Speed/Cadence. Speed: ${bikeStatus.speed}, Cadence: ${bikeStatus.cadence}")
-                }
-                EBike_BATTERY_CHAR_UUID -> {
-                    val value = byteArrayOf(bikeStatus.battery.toByte())
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
-                    Log.d("GATT_SERVER", "Read request for eBike Battery. Value: ${bikeStatus.battery}")
-                }
-                EBike_ASSIST_MODE_CHAR_UUID -> {
-                    val value = byteArrayOf(bikeStatus.assistMode.toByte())
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
-                    Log.d("GATT_SERVER", "Read request for eBike Assist Mode. Value: ${bikeStatus.assistMode}")
-                }
-                CSC_MEASUREMENT_CHAR_UUID -> {
-                    // Push latest CSC value
-                    updateCscMeasurementCharacteristic()
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, cscMeasurementCharacteristic?.value)
-                }
-                CSC_FEATURE_CHAR_UUID -> {
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, cscFeatureCharacteristic?.value)
-                }
-                CSC_SENSOR_LOCATION_CHAR_UUID -> {
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, cscSensorLocationCharacteristic?.value)
-                }
-                else -> {
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
-                    Log.w("GATT_SERVER", "Unknown characteristic read request for ${characteristic.uuid}")
-                }
-            }
-        }
-
-        override fun onDescriptorReadRequest(device: BluetoothDevice?, requestId: Int, offset: Int, descriptor: BluetoothGattDescriptor?) {
-            super.onDescriptorReadRequest(device, requestId, offset, descriptor)
-            if (descriptor?.uuid == UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")) { // CCCD
-                val value = if (descriptor.characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) {
-                    BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                } else {
-                    BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-                }
-                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
-                Log.d("GATT_SERVER", "Read request for CCCD of ${descriptor.characteristic.uuid}")
-            } else {
-                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
-                Log.w("GATT_SERVER", "Unknown descriptor read request for ${descriptor?.uuid}")
-            }
-        }
-
-        override fun onDescriptorWriteRequest(device: BluetoothDevice?, requestId: Int, descriptor: BluetoothGattDescriptor?, preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray?) {
-            super.onDescriptorWriteRequest(device, requestId, descriptor, preparedWrite, responseNeeded, offset, value)
-            if (descriptor?.uuid == UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")) { // CCCD
-                if (responseNeeded) {
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
-                }
-
-                if (Arrays.equals(value, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
-                    Log.d("GATT_SERVER", "Enable notifications for ${descriptor?.characteristic?.uuid}")
-                } else if (Arrays.equals(value, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)) {
-                    Log.d("GATT_SERVER", "Disable notifications for ${descriptor?.characteristic?.uuid}")
-                }
-            } else {
-                if (responseNeeded) {
-                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
-                }
-                Log.w("GATT_SERVER", "Unknown descriptor write request for ${descriptor?.uuid}")
-            }
-        }
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
-    private fun restartAdvertising() {
-        stopAdvertising()
-        startAdvertising()
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
-    private fun startAdvertising() {
-        if (!hasPermissions() || bluetoothLeAdvertiser == null) return
-
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setConnectable(true)
-            .setTimeout(0)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-            .build()
-
-        val dataBuilder = AdvertiseData.Builder()
-            .setIncludeDeviceName(true)
-            .addServiceUuid(ParcelUuid(EBike_DATA_SERVICE_UUID)) // keep your custom service visible
-
-        if (broadcastPowerAsCPS) {
-            dataBuilder.addServiceUuid(ParcelUuid(CYCLING_POWER_SERVICE_UUID))
-        }
-        if (broadcastCadenceAsCSC || broadcastBatteryAsCSC) {
-            dataBuilder.addServiceUuid(ParcelUuid(CSC_SERVICE_UUID))
-        }
-
-        val data = dataBuilder.build()
-
-        try {
-            bluetoothLeAdvertiser?.startAdvertising(settings, data, advertiseCallback)
-            Log.d("ADVERTISER", "Advertising started (CPS=$broadcastPowerAsCPS, CSC=${broadcastCadenceAsCSC || broadcastBatteryAsCSC})")
-        } catch (e: Exception) {
-            Log.e("ADVERTISER", "Failed to start advertising: ${e.message}")
-        }
-    }
-
-    private val advertiseCallback = object : AdvertiseCallback() {
-        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-            super.onStartSuccess(settingsInEffect)
-            Log.d("ADVERTISER", "Advertising successfully started")
-        }
-
-        override fun onStartFailure(errorCode: Int) {
-            super.onStartFailure(errorCode)
-            Log.e("ADVERTISER", "Advertising failed: $errorCode")
-            // Handle error codes, e.g., ADVERTISE_FAILED_ALREADY_STARTED, ADVERTISE_FAILED_FEATURE_UNSUPPORTED
-        }
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
-    private fun stopAdvertising() {
-        if (!hasPermissions()) {
-            Log.e("ADVERTISER", "Missing permissions for stopping advertising")
-            return
-        }
-        try {
-            bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
-            Log.d("ADVERTISER", "Advertising stopped")
-        } catch (e: Exception) {
-            Log.e("ADVERTISER", "Error stopping advertising: ${e.message}")
-        }
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private fun closeGattServer() {
-        if (!hasPermissions()) {
-            Log.e("GATT_SERVER", "Missing permissions for closing GATT server")
-            return
-        }
-        try {
-            bluetoothGattServer?.close()
-            bluetoothGattServer = null
-            Log.d("GATT_SERVER", "GATT server closed")
-        } catch (e: Exception) {
-            Log.e("GATT_SERVER", "Error closing GATT server: ${e.message}")
-        }
     }
 
     //region Characteristic Update Functions
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private fun updateCyclingPowerMeasurementCharacteristic() {
-        if (!broadcastPowerAsCPS) return
-
-        val characteristic = cyclingPowerMeasurementCharacteristic ?: return
-        val power = bikeStatus.humanPower // Power in Watts
-
-        // Cycling Power Measurement characteristic format (Little Endian)
-        // Flags (2 bytes): 0x0001 for "Pedal Power Balance Present", 0x0002 for "Accumulated Torque Present", etc.
-        // Power (2 bytes, signed integer, in Watts)
-        // Accumulated Crank Revolutions (2 bytes)
-        // Last Crank Event Time (2 bytes, 1/1024 s units)
-
-        // For simplicity, let's just send power for now.
-        // A real power meter would calculate accumulated crank revolutions and last crank event time.
-        // We will use 0 for flags for now, and only send power.
-        // Power is a signed 16-bit integer (SINT16)
-
-        val flags: Short = 0x0000 // No flags set for now
-        val powerValue: Short = power.toShort() // Convert Int to Short
-
-        val value = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
-            .putShort(flags)
-            .putShort(powerValue)
-            .array()
-
-        characteristic.value = value
-        bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false) // null means all connected devices
-        Log.d("GATT_SERVER", "Notified Power: $power Watts")
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private fun updateEbikeSpeedCadenceCharacteristic() {
-        val characteristic = ebikeSpeedCadenceCharacteristic ?: return
-        val speed = (bikeStatus.speed * 100).toInt() // Speed in 0.01 km/h increments for int
-        val cadence = bikeStatus.cadence // Cadence in RPM
-
-        // Custom format: Speed (2 bytes, little endian), Cadence (2 bytes, little endian)
-        val value = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
-            .putShort(speed.toShort())
-            .putShort(cadence.toShort())
-            .array()
-
-        characteristic.value = value
-        bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false)
-        Log.d("GATT_SERVER", "Notified eBike Speed/Cadence: Speed=${bikeStatus.speed}, Cadence=${bikeStatus.cadence}")
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private fun updateEbikeBatteryCharacteristic() {
-        val characteristic = ebikeBatteryCharacteristic ?: return
-        val battery = bikeStatus.battery.toByte() // Battery in percentage (0-100)
-
-        // Single byte for battery percentage
-        characteristic.value = byteArrayOf(battery)
-        bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false)
-        Log.d("GATT_SERVER", "Notified eBike Battery: ${bikeStatus.battery}%")
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private fun updateEbikeAssistModeCharacteristic() {
-        val characteristic = ebikeAssistModeCharacteristic ?: return
-        val assistMode = bikeStatus.assistMode.toByte() // Assist mode
-
-        // Single byte for assist mode
-        characteristic.value = byteArrayOf(assistMode)
-        bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false)
-        Log.d("GATT_SERVER", "Notified eBike Assist Mode: ${bikeStatus.assistMode}")
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private fun updateCscMeasurementCharacteristic() {
-    if (!(broadcastCadenceAsCSC || broadcastBatteryAsCSC)) return
-    val characteristic = cscMeasurementCharacteristic ?: return
-
-    val rpm = when {
-        broadcastCadenceAsCSC -> bikeStatus.cadence
-        broadcastBatteryAsCSC -> bikeStatus.battery // 0–100 “RPM” as a hack
-        else -> 0
-    }.coerceAtLeast(0)
-
-    val nowMs = SystemClock.elapsedRealtime()
-    if (cscLastTimestampMs == 0L) cscLastTimestampMs = nowMs
-    val dt = (nowMs - cscLastTimestampMs) / 1000.0
-    val deltaRevs = (rpm / 60.0) * dt
-    cscCumulativeCrankRevs = (cscCumulativeCrankRevs + deltaRevs.toInt()).coerceAtLeast(0)
-    cscLastEventTime1024 = ((cscLastEventTime1024 + (dt * 1024.0).toInt()) and 0xFFFF)
-    cscLastTimestampMs = nowMs
-
-    val flags = 0x02 // crank-present only
-    val payload = ByteBuffer.allocate(1 + 2 + 2).order(ByteOrder.LITTLE_ENDIAN)
-        .put(flags.toByte())
-        .putShort(cscCumulativeCrankRevs.toShort())
-        .putShort(cscLastEventTime1024.toShort())
-        .array()
-
-    characteristic.value = payload
-    bluetoothGattServer?.notifyCharacteristicChanged(null, characteristic, false)
-    Log.d("GATT_SERVER", "CSC notify crank-only rpm=$rpm, cumRevs=$cscCumulativeCrankRevs")
-    }
 
 
     //endregion
 
-    override fun onDestroy() {
-        super.onDestroy()
-        disconnect()
-        stopAdvertising()
-        closeGattServer()
-    }
+//    override fun onDestroy() {
+//        super.onDestroy()
+//        disconnect()
+//    }
 }
 
 @Composable

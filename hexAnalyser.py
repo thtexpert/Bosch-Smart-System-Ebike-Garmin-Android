@@ -17,14 +17,24 @@ except ImportError:
     print("Note: pandas not available, CSV export will use basic format")
 
 class BLEMessageAnalyzer:
-    data_ids   = {  '985A' :    'Cadence' ,     \
-                    '985B' :    'HumanPower' ,  \
-                    '985D' :    'MotorPower' ,  \
-                    '982D' :    'Speed' ,       \
-                    '8088' :    'Battery' ,     \
-                    '9809' :    'AssistMode' ,  \
+    data_ids   = {  '985A' :    'Cadence' ,         \
+                    '985B' :    'HumanPower' ,      \
+                    '985D' :    'MotorPower' ,      \
+                    '9815' :    'MotorPower1' ,     \
+                    '982D' :    'Speed' ,           \
+                    '9808' :    'Speed1' ,          \
+                    '9815' :    'Torque?' ,         \
+                    '80BC' :    'Battery' ,         \
+                    '8088' :    'Battery1' ,        \
+                    '80CA' :    'Battery2' ,        \
+                    '9809' :    'AssistMode' ,      \
+                    '9818' :    'TotalDist' ,       \
+                    'A252' :    'TripDistPerMode',  \
+                     #'80C5' :    'NotPhoneBattery?', \
+                    '108C' :    'DistPerMode',      \
+                    '809C' :    'BatteryDelivered'  \
                     }
-
+    ignore_data_ids = ['988B', '984E', 'A186', 'A041']  # TBD seem to be large arrays, need to investigate later
     def __init__(self):
         self.messages = []
         self.data_by_id = defaultdict(list)
@@ -71,17 +81,21 @@ class BLEMessageAnalyzer:
             
         # Convert to byte array
         bytes_data = [message[i:i+2] for i in range(0, len(message), 2)]
-        
-        if bytes_data[0] != '30':
+        if bytes_data[0] != '30' and bytes_data[0] != '10':
             return None
+            
+        start_byte = bytes_data[0]
             
         length = int(bytes_data[1], 16)
         
         if len(bytes_data) >= 4:
             data_id = bytes_data[2] + bytes_data[3]
+            if data_id in self.ignore_data_ids:  # skip these large unknown
+                return None
+                
             if len(bytes_data) == 4:
                 return {
-                    'type': '30',
+                    'type': start_byte,
                     'data_id': data_id,
                     'data_type': 8,
                     'value': 0,
@@ -92,15 +106,47 @@ class BLEMessageAnalyzer:
                 data_type = int(bytes_data[4], 16)
                 values = 0
                 value_bytes = bytes_data[5:len(bytes_data)]
-                if data_id == '321 9818' and data_type == 8:
-                    values = self.parse_for_int32( value_bytes)
-                    #values = self.parse_for_varint( value_bytes)
+                if data_id == '9808' and data_type == 8:
+                    #values = self.parse_for_int32( bytes_data[5:8] )
+                    values = self.parse_for_varint( bytes_data[5:8] )
                 else:
                     if data_type == 8:
-                        print(f"      {bytes_data} with data_id {data_id}: parse_for_varint in {value_bytes}  :")
+                        #print(f"      {bytes_data} with data_id {data_id}: parse_for_varint in {value_bytes}  :")
                         values = self.parse_for_varint( value_bytes)
+                    if data_type == 10:
+                        #print(f"      {bytes_data} with data_id {data_id}: parse_for_varint in {value_bytes}  :")
+                        values = []
+                        values = self.parse_for_vararrint(values, value_bytes)#
+                    if data_type == 192 and data_id == '108C':
+                        #      30-10-10-8C-C0  -80-55-0A-09-08-  9A-D4-B5-02  -10-C1-89-02-  sport 0100 0100
+                        key = int(value_bytes[1],16) & 0xF
+                        xxx = []
+                        #if key == 5:
+                        xxx = self.parse_for_vararrint( xxx, value_bytes[5:])
+                            #  - Turbo 3986 km
+                            #  - Sport 5073 km
+                            #  - Tour+ 3214 km
+                            #  - Eco 946 km
+                            #  - Off 60 km
+                        txt = "????"
+                        values = xxx[0]
+                        if abs(values/1000 - 3986) <50:
+                            txt = "TURBO"
+                        if abs(values/1000 - 5073) <50:
+                            txt = "SPORT"
+                        if abs(values/1000 - 3214) <50:
+                            txt = "TOUR+"
+                        if abs(values/1000 - 946) <50:
+                            txt = "ECO  "
+                        if abs(values/1000 - 60) <50:
+                            txt = "OFF  "
+                        arg2 = 0
+                        if len(xxx)>2:
+                            arg2 = xxx[2]
+                        print(f"  custom data_id {data_id}:  key {key:04b} {txt} has  {values:8d} arg2 = {arg2:6d}")
+                        
                 return {
-                    'type': f'30',
+                    'type': start_byte,
                     'data_id': data_id,  # Fixed ID for this special field
                     'data_type': data_type,
                     'value': values,
@@ -110,7 +156,7 @@ class BLEMessageAnalyzer:
                 
         # For any other format, capture what we can
         return {
-            'type': f'30-{length:02d}',
+            'type': f'{start_byte}-{length:02d}',
             'data_id': 'unknown',
             'data_type': 'unknown',
             'value': 0,
@@ -127,13 +173,33 @@ class BLEMessageAnalyzer:
                 single_value = int(bytes_data[0], 16) & 127
                 i = 1
                 while (i < len(bytes_data)) and ((int(bytes_data[i-1], 16) & 128) == 128):
-                    print(f"     single_value {single_value} i {i} {bytes_data} len {len(bytes_data)}")
+                    #print(f"     single_value {single_value} i {i} {bytes_data} len {len(bytes_data)}")
                     single_value = single_value + ((int(bytes_data[i], 16) & 127 ) <<  (7 * i))
                     i = i + 1
-                print(f"     single_value {single_value} i {i} {bytes_data} len {len(bytes_data)}")
+                #print(f"     single_value {single_value} i {i} {bytes_data} len {len(bytes_data)}")
         
         return single_value
-                
+        
+    def parse_for_vararrint(self, val_array, bytes_data):
+        single_value = -9
+        match len(bytes_data):
+            case 0:
+                # no data means value 0
+                single_value =  0
+            case _:
+                single_value = int(bytes_data[0], 16) & 127
+                i = 1
+                while (i < len(bytes_data)) and ((int(bytes_data[i-1], 16) & 128) == 128):
+                    #print(f"     single_value {single_value} i {i} {bytes_data} len {len(bytes_data)}")
+                    single_value = single_value + ((int(bytes_data[i], 16) & 127 ) <<  (7 * i))
+                    i = i + 1
+                #print(f"     single_value {single_value} i {i} {bytes_data} len {len(bytes_data)}")
+        val_array.append(single_value)
+        if len(bytes_data) - i > 0:
+            self.parse_for_vararrint(val_array, bytes_data[i:len(bytes_data)])
+        
+        return val_array
+              
     def parse_for_int32(self, bytes_data):
         single_value = -9
         match len(bytes_data):
@@ -163,24 +229,58 @@ class BLEMessageAnalyzer:
         for msg in messages:
             parsed = self.parse_message(msg)
             if parsed:
-                self.messages.append(parsed)
-                
                 # Store by data ID
-                key = f"{parsed['data_id']}"
-                if parsed['data_type']:
-                    key += f"_{parsed['data_type']}"
+                # if data_type is an array type create individual outputs for each array index
+                if parsed['data_type'] in [10]:
+                    id = parsed['data_id']  
+                    key = f"{parsed['data_id']}"
+                    if id in self.data_ids:
+                        key = self.data_ids[parsed['data_id']]
                     
-                self.data_by_id[key].append(parsed['value'])
-                self.data_types[parsed['data_type']] += 1
-                
-                # Update statistics
-                stats = self.id_stats[key]
-                stats['count'] += 1
-                stats['values'].append(parsed['value'])
-                if stats['min'] is None or parsed['value'] < stats['min']:
-                    stats['min'] = parsed['value']
-                if stats['max'] is None or parsed['value'] > stats['max']:
-                    stats['max'] = parsed['value']
+                    key += f"_{parsed['data_type']}"
+                    for i in range(len(parsed['value'])-1):
+                        key1 = key + f"_{i}"
+                        v = parsed['value'][i]
+                        print(f"key1 {key1}: v {v}")
+
+                        self.data_by_id[key1].append(v)
+                        self.data_types[parsed['data_type']] += 1
+                    
+                        # Update statistics
+                        stats = self.id_stats[key1]
+                        stats['count'] += 1
+                        stats['values'].append(v)
+                        if stats['min'] is None or v < stats['min']:
+                            stats['min'] = v
+                        if stats['max'] is None or v > stats['max']:
+                            stats['max'] = v
+                        self.messages.append(               \
+                            {
+                                'type': parsed['type'],                    
+                                'data_id': parsed['data_id'] +  f"_{i}" ,
+                                'data_type': parsed['data_type'],        
+                                'value': v,                    
+                                'raw': msg                 
+                            }
+                            )
+
+                else:
+                    self.messages.append(parsed)
+                    key = f"{parsed['data_id']}"
+                    if parsed['data_type']:
+                        key += f"_{parsed['data_type']}"
+                        
+                    self.data_by_id[key].append(parsed['value'])
+                    self.data_types[parsed['data_type']] += 1
+                    
+                    # Update statistics
+                    stats = self.id_stats[key]
+                    stats['count'] += 1
+                    stats['values'].append(parsed['value'])
+                    if stats['min'] is None or parsed['value'] < stats['min']:
+                        stats['min'] = parsed['value']
+                    if stats['max'] is None or parsed['value'] > stats['max']:
+                        stats['max'] = parsed['value']
     
     def load_from_file(self, filename):
         """Load hex data from file, one message per line"""
@@ -224,7 +324,7 @@ class BLEMessageAnalyzer:
                 recent_values = stats['values'][-5:]
                 print(f"{data_id:<20} {stats['count']:<8} {stats['min']:<8} {stats['max']:<8} {range_val:<10} {recent_values}")
     
-    def plot_data(self, max_plots=12):
+    def plot_data(self, max_plots=48):
         """Plot time series for each data ID"""
         if not HAS_MATPLOTLIB:
             print("Matplotlib not available. Install with: pip install matplotlib")
@@ -234,7 +334,7 @@ class BLEMessageAnalyzer:
         # Filter out IDs with too few data points or no variation
         interesting_ids = {}
         for data_id, values in self.data_by_id.items():
-            if len(values) >= 3:  # At least 3 data points
+            if len(values) >= 2:  # At least 3 data points
                 if len(set(values)) > 1:  # Has variation
                     interesting_ids[data_id] = values
         
@@ -263,7 +363,13 @@ class BLEMessageAnalyzer:
             values = interesting_ids[data_id]
             
             ax.plot(values, 'o-', markersize=3)
-            ax.set_title(f'Data ID: {data_id}')
+            txt = data_id[0:4]
+            if txt in self.data_ids:
+                txt = self.data_ids[txt]
+            txt = txt + data_id[4:(len(data_id)-0)]
+            print(txt + " " + data_id)
+            ax.set_title(f'Data ID: {txt}')
+            #ax.set_title(f'Data ID: {data_id}')
             ax.set_xlabel('Message Index')
             ax.set_ylabel('Value')
             ax.grid(True, alpha=0.3)
