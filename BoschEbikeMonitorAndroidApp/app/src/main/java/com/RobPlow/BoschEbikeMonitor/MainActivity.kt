@@ -1,6 +1,7 @@
 package com.RobPlow.BoschEbikeMonitor
 
 import android.Manifest
+import android.R
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.bluetooth.*
@@ -32,6 +33,28 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.*
 import android.os.SystemClock
+import androidx.collection.emptyLongSet
+import kotlin.Short
+import kotlin.String
+import org.eclipse.paho.android.service.MqttAndroidClient
+import org.eclipse.paho.client.mqttv3.MqttCallback
+import org.eclipse.paho.client.mqttv3.MqttMessage
+import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions
+import org.eclipse.paho.client.mqttv3.IMqttToken
+import org.eclipse.paho.client.mqttv3.MqttException
+import org.eclipse.paho.client.mqttv3.IMqttActionListener
+import org.eclipse.paho.client.mqttv3.MqttClientPersistence
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+
+//import org.eclipse.paho.client.mqttv3.MqttAsyncClient
+//import org.eclipse.paho.client.mqttv3.MqttClient
+
+
 
 data class BoschMessage(
     val messageId: Int,
@@ -51,6 +74,20 @@ data class BikeStatus(
     var totalBattery: Double = 0.0,
 )
 
+data class MqttSetup(
+    var Enabled: Short = 1,
+    var BrokerIP: String = "",
+    var Port: String = "",
+    var ClientId: String = "",
+    var UserName: String = "",
+    var Password: String = "",
+    var Topic: String = "",
+)
+
+enum class MqttStatus {
+    CONNECTED, DISCONNECTED, UNKNOWN
+}
+
 class MainActivity : ComponentActivity() {
 
     // Your bike's specific MAC address - UPDATE THIS!
@@ -60,6 +97,16 @@ class MainActivity : ComponentActivity() {
     private val BOSCH_STATUS_SERVICE_UUID = UUID.fromString("00000010-eaa2-11e9-81b4-2a2ae2dbcce4")
     private val BOSCH_STATUS_CHAR_UUID = UUID.fromString("00000011-eaa2-11e9-81b4-2a2ae2dbcce4")
 
+    private var mqttSetup by mutableStateOf(MqttSetup(
+        Enabled = 1,
+        BrokerIP = "192.168.0.86",
+        Port = "1883",
+        ClientId = "CubeToni",
+        UserName = "dahoamEnergie",
+        Password = "16081996",
+        Topic = "ebikemonitor")
+    )
+
     // Notification
     private val CHANNEL_ID = "bosch_ebike_notifications"
     private val NOTIFICATION_ID = 1
@@ -67,6 +114,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private lateinit var bluetoothLeScanner: BluetoothLeScanner
     private var bluetoothGatt: BluetoothGatt? = null
+
+    private lateinit var mqttClient: MqttAndroidClient
+    // TAG
+    companion object {
+        const val TAG = "eBikeMqttClient"
+    }
+    private var mqttStatus by  mutableStateOf( MqttStatus.UNKNOWN)
 
     // BLE Advertising and GATT Server
 //    private var bluetoothLeAdvertiser: BluetoothLeAdvertiser? = null
@@ -121,6 +175,30 @@ class MainActivity : ComponentActivity() {
     // Previous values for change detection - used for battery notification
     private var previousBattery = 0
 
+
+    private fun scheduleCoroutineAtFixedRate(scope: CoroutineScope, period: Duration, initialDelay: Duration = Duration.ZERO, action: RunnableCoroutine) {
+        scope.launch {
+            delay(initialDelay)
+
+            val mutex = Mutex()
+
+            while (true) {
+                launch {
+                    mutex.withLock {
+                        action.run()
+                    }
+                }
+                delay(period)
+            }
+        }
+    }
+
+    fun interface RunnableCoroutine {
+        suspend fun run()
+    }
+
+
+
     private fun resetCscCounters() {
     cscCumulativeCrankRevs = 0
     cscLastEventTime1024 = 0
@@ -157,6 +235,8 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun MainScreen() {
+
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -185,13 +265,22 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.padding(10.dp)
                 ) {
                     Text(
-                        text = "Status: $connectionStatus",
+                        text = "BLE:  $connectionStatus",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
                         text = "Target: $BOSCH_BIKE_MAC",
                         style = MaterialTheme.typography.bodySmall
                     )
+                    Text(
+                        text = "MQTT: ${mqttStatus}",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Target: ${mqttSetup.BrokerIP}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
                 }
                 Spacer(modifier = Modifier.height(10.dp))
 
@@ -311,6 +400,25 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text("Connect to This MAC")
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            val sContext =   getApplicationContext();
+                            connectMqtt(sContext)
+
+                        },
+                    ) {
+                        Text("Connect Mqtt")
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                                publishMqtt(mqttSetup.Topic + "/status", "online");
+                        },
+                    ) {
+                        Text("Publish status Mqtt")
+                    }
+
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -400,6 +508,84 @@ class MainActivity : ComponentActivity() {
         bluetoothAdapter = bluetoothManager.adapter
         bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
 //        bluetoothLeAdvertiser = bluetoothAdapter.bluetoothLeAdvertiser // Initialize advertiser
+    }
+
+    private fun connectMqtt(context: Context) {
+        //val serverURI = "tcp://168.192.0.86:1883"
+        val serverURI = "tcp://"+ mqttSetup.BrokerIP + ":" + mqttSetup.Port
+        Log.d(TAG, "Connecting 1 to message: ${serverURI.toString()} ")
+        mqttClient = MqttAndroidClient(context, serverURI, mqttSetup.ClientId)
+        mqttClient.setCallback(object : MqttCallback {
+            override fun messageArrived(topic: String?, message: MqttMessage?) {
+                Log.d(TAG, "Receive message: ${message.toString()} ")
+            }
+
+            override fun connectionLost(cause: Throwable?) {
+                Log.d(TAG, "Connection lost ${cause.toString()}")
+                mqttStatus = MqttStatus.DISCONNECTED
+            }
+
+            override fun deliveryComplete(token: IMqttDeliveryToken?) {
+
+            }
+        })
+        // works up to here
+        Log.d(TAG, "Connecting 2 to message: ${serverURI.toString()} ")
+        val options = MqttConnectOptions()
+        options.userName = mqttSetup.UserName
+        options.password = mqttSetup.Password.toCharArray()
+        options.isAutomaticReconnect = true
+        options.isCleanSession = false
+
+        try {
+            mqttClient.connect(options, null, object : IMqttActionListener {
+                override fun onSuccess(asyncActionToken: IMqttToken?) {
+                    Log.d(TAG, "Connection success")
+                    mqttStatus = MqttStatus.CONNECTED
+                    // enable mqtt alive signal
+                    val scope = CoroutineScope(Dispatchers.Default)
+                    scheduleCoroutineAtFixedRate(scope, 15.seconds) {
+                        if(mqttClient.isConnected) {
+                            publishMqtt(mqttSetup.Topic + "/status", "online");
+                        }
+                    }
+
+
+                }
+
+                override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
+                    Log.d(TAG, "Connection failed")
+                    mqttStatus = MqttStatus.DISCONNECTED
+                }
+            })
+        } catch (e: MqttException) {
+            e.printStackTrace()
+        }
+
+    }
+
+    private fun publishMqtt(topic: String, msg: String, qos: Int = 1, retained: Boolean = false) {
+        try {
+            Log.d(TAG, "publish: topic ${topic} topic ${msg} ")
+            val message = MqttMessage()
+            message.payload = msg.toByteArray()
+            message.qos = qos
+            message.isRetained = retained
+            mqttClient.publish(topic, message, null, object : IMqttActionListener {
+                override fun onSuccess(asyncActionToken: IMqttToken?) {
+                    Log.d(TAG, "$msg published to $topic")
+                    mqttStatus = MqttStatus.CONNECTED
+                }
+
+                override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
+                    Log.d(TAG, "Failed to publish $msg to $topic")
+                    mqttStatus = MqttStatus.DISCONNECTED
+                }
+            })
+        } catch (e: MqttException) {
+            mqttStatus = MqttStatus.DISCONNECTED
+            e.printStackTrace()
+        }
     }
 
     private fun createNotificationChannel() {
@@ -819,6 +1005,7 @@ class MainActivity : ComponentActivity() {
 //                        }
                         previousBattery = newBattery
                         bikeStatus = bikeStatus.copy(battery = newBattery)
+                        publishMqtt(mqttSetup.Topic + "/stateofcharge", newBattery.toString());
                         parsedInfo.add("🔋 Battery: ${newBattery}%")
 //                        updateEbikeBatteryCharacteristic()
 //                        updateCscMeasurementCharacteristic()
@@ -827,6 +1014,7 @@ class MainActivity : ComponentActivity() {
                         // Assist Mode - use value directly
                         val newAssistMode = message.value.coerceIn(0, 10)
                         bikeStatus = bikeStatus.copy(assistMode = newAssistMode)
+                        publishMqtt(mqttSetup.Topic + "/assistmode", newAssistMode.toString());
                         parsedInfo.add("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
   //                      updateEbikeAssistModeCharacteristic()
                     }
@@ -834,6 +1022,8 @@ class MainActivity : ComponentActivity() {
                         // total driven distance in km - use value directly
                         val newtotalDist = message.value/1000.0
                         bikeStatus = bikeStatus.copy(totalDist = newtotalDist)
+                        publishMqtt(mqttSetup.Topic + "/totaldistance", newtotalDist.toString());
+
                         parsedInfo.add("⚡ Total Distance: ${newtotalDist}km")
                         //                      updateEbikeAssistModeCharacteristic()
                     }
@@ -841,6 +1031,7 @@ class MainActivity : ComponentActivity() {
                         // total supplied Energy from battery (kWh)
                         val newtotalBattery= message.value/1000.0
                         bikeStatus = bikeStatus.copy(totalBattery = newtotalBattery)
+                        publishMqtt(mqttSetup.Topic + "/totalbattery", newtotalBattery.toString());
                         parsedInfo.add("⚡ Total Distance: ${newtotalBattery}%")
                         //                      updateEbikeAssistModeCharacteristic()
                     }

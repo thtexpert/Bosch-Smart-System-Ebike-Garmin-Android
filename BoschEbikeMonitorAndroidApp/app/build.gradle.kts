@@ -61,4 +61,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
+    implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.4")
+    implementation("org.eclipse.paho:org.eclipse.paho.android.service:1.1.1")
+    implementation("com.android.support:support-v4:28.0.0")  //this is what I added
 }
