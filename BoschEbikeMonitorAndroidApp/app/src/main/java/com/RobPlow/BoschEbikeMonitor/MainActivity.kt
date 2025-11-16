@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -87,6 +88,9 @@ data class MqttSetup(
 enum class MqttStatus {
     CONNECTED, DISCONNECTED, UNKNOWN
 }
+enum class BleStatus {
+    CONNECTED, DISCONNECTED, CONNECTING, UNKNOWN
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -121,7 +125,7 @@ class MainActivity : ComponentActivity() {
         const val TAG = "eBikeMqttClient"
     }
     private var mqttStatus by  mutableStateOf( MqttStatus.UNKNOWN)
-
+    private var bleStatus  by  mutableStateOf( BleStatus.UNKNOWN)
     // BLE Advertising and GATT Server
 //    private var bluetoothLeAdvertiser: BluetoothLeAdvertiser? = null
 //    private var bluetoothGattServer: BluetoothGattServer? = null
@@ -175,7 +179,15 @@ class MainActivity : ComponentActivity() {
     // Previous values for change detection - used for battery notification
     private var previousBattery = 0
 
-
+//    fun launchBoschFlowApp() {
+//
+//        try {
+//            var intent : Intent? = packageManager.getLaunchIntentForPackage("com.bosch.ebike.onebikeapp")
+//        } catch (e: Exception) {
+//            Log.e("launchBoschFlowApp", "Failed to start scan: ${e.message}")
+//        }
+//        startActivity(intent)
+//    }
     private fun scheduleCoroutineAtFixedRate(scope: CoroutineScope, period: Duration, initialDelay: Duration = Duration.ZERO, action: RunnableCoroutine) {
         scope.launch {
             delay(initialDelay)
@@ -228,6 +240,8 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     MainScreen()
+                    val sContext = getApplicationContext()
+                    connectMqtt(sContext)
                 }
             }
         }
@@ -265,7 +279,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.padding(10.dp)
                 ) {
                     Text(
-                        text = "BLE:  $connectionStatus",
+                        text = "BLE:  ${bleStatus}",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
@@ -353,24 +367,24 @@ class MainActivity : ComponentActivity() {
             }
 
             // Control Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                Button(
-                    onClick = { connectToBoschBike() },
-                    enabled = !isScanning && connectionStatus != "Connected"
-                ) {
-                    Text("Scan Devices")
-                }
-
-                Button(
-                    onClick = { disconnect() },
-                    enabled = connectionStatus == "Connected"
-                ) {
-                    Text("Disconnect")
-                }
-            }
+//            Row(
+//                modifier = Modifier.fillMaxWidth(),
+//                horizontalArrangement = Arrangement.SpaceEvenly
+//            ) {
+//                Button(
+//                    onClick = { connectToBoschBike() },
+//                    enabled = !isScanning && connectionStatus != "Connected"
+//                ) {
+//                    Text("Scan Devices")
+//                }
+//
+//                Button(
+//                    onClick = { disconnect() },
+//                    enabled = connectionStatus == "Connected"
+//                ) {
+//                    Text("Disconnect")
+//                }
+//            }
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -400,24 +414,24 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text("Connect to This MAC")
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = {
-                            val sContext =   getApplicationContext();
-                            connectMqtt(sContext)
-
-                        },
-                    ) {
-                        Text("Connect Mqtt")
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = {
-                                publishMqtt(mqttSetup.Topic + "/status", "online");
-                        },
-                    ) {
-                        Text("Publish status Mqtt")
-                    }
+//                    Spacer(modifier = Modifier.height(8.dp))
+//                    Button(
+//                        onClick = {
+//                            val sContext =   getApplicationContext();
+//                            connectMqtt(sContext)
+//
+//                        },
+//                    ) {
+//                        Text("Connect Mqtt")
+//                    }
+//                    Spacer(modifier = Modifier.height(8.dp))
+//                    Button(
+//                        onClick = {
+//                                publishMqtt(mqttSetup.Topic + "/assistmode", "1");
+//                        },
+//                    ) {
+//                        Text("Publish assistMode 1")
+//                    }
 
                 }
             }
@@ -441,6 +455,7 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 if (connectionStatus != "Connected") {
                                     connectToDevice(result.device)
+                                    //launchBoschFlowApp()
                                 }
                             }
                         ) {
@@ -465,11 +480,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(10.dp)) {
-                Text("Broadcast options", style = MaterialTheme.typography.titleMedium)
-            }
-            }
+//            Card(modifier = Modifier.fillMaxWidth()) {
+//            Column(Modifier.padding(10.dp)) {
+//                Text("Broadcast options", style = MaterialTheme.typography.titleMedium)
+//            }
+//            }
 
         }
     }
@@ -546,7 +561,7 @@ class MainActivity : ComponentActivity() {
                     val scope = CoroutineScope(Dispatchers.Default)
                     scheduleCoroutineAtFixedRate(scope, 15.seconds) {
                         if(mqttClient.isConnected) {
-                            publishMqtt(mqttSetup.Topic + "/status", "online");
+                            publishMqtt(mqttSetup.Topic + "/status", "online", 0, false);
                         }
                     }
 
@@ -564,16 +579,16 @@ class MainActivity : ComponentActivity() {
 
     }
 
-    private fun publishMqtt(topic: String, msg: String, qos: Int = 1, retained: Boolean = false) {
+    private fun publishMqtt(topic: String, msg: String, qos: Int = 0, retained: Boolean = true) {
         try {
-            Log.d(TAG, "publish: topic ${topic} topic ${msg} ")
+            // Log.d(TAG, "publish: topic ${topic} topic ${msg} ")
             val message = MqttMessage()
             message.payload = msg.toByteArray()
             message.qos = qos
             message.isRetained = retained
             mqttClient.publish(topic, message, null, object : IMqttActionListener {
                 override fun onSuccess(asyncActionToken: IMqttToken?) {
-                    Log.d(TAG, "$msg published to $topic")
+                    Log.d(TAG, "Success published $msg to $topic")
                     mqttStatus = MqttStatus.CONNECTED
                 }
 
@@ -737,6 +752,8 @@ class MainActivity : ComponentActivity() {
 
     private fun connectToDevice(device: BluetoothDevice) {
         if (!hasPermissions()) return
+        bleStatus = BleStatus.CONNECTING
+        publishMqtt(mqttSetup.Topic + "/blestatus", "connecting");
 
         bluetoothGatt = device.connectGatt(this, false, gattCallback)
     }
@@ -747,18 +764,25 @@ class MainActivity : ComponentActivity() {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         connectionStatus = "Connected! Discovering services..."
+                        bleStatus = BleStatus.CONNECTED
+                        publishMqtt(mqttSetup.Topic + "/blestatus", "connected");
                         if (hasPermissions()) {
                             gatt?.discoverServices()
                         }
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
                         connectionStatus = "Disconnected"
+                        bleStatus = BleStatus.DISCONNECTED
+                        publishMqtt(mqttSetup.Topic + "/blestatus", "disconnected");
                         bikeData = "No data"
                         rawHexData = "No data"
                         bikeStatus = BikeStatus() // Reset live status
                     }
                     BluetoothProfile.STATE_CONNECTING -> {
                         connectionStatus = "Connecting..."
+                        bleStatus = BleStatus.CONNECTING
+                        publishMqtt(mqttSetup.Topic + "/blestatus", "connecting");
+
                     }
                 }
             }
@@ -1005,7 +1029,9 @@ class MainActivity : ComponentActivity() {
 //                        }
                         previousBattery = newBattery
                         bikeStatus = bikeStatus.copy(battery = newBattery)
-                        publishMqtt(mqttSetup.Topic + "/stateofcharge", newBattery.toString());
+                        if(newBattery > 0) {
+                            publishMqtt(mqttSetup.Topic + "/stateofcharge", newBattery.toString())
+                        }
                         parsedInfo.add("🔋 Battery: ${newBattery}%")
 //                        updateEbikeBatteryCharacteristic()
 //                        updateCscMeasurementCharacteristic()
@@ -1013,8 +1039,10 @@ class MainActivity : ComponentActivity() {
                     0x9809 -> {
                         // Assist Mode - use value directly
                         val newAssistMode = message.value.coerceIn(0, 10)
+                        if (newAssistMode != bikeStatus.assistMode) {
+                            publishMqtt(mqttSetup.Topic + "/assistmode",getAssistModeName(newAssistMode))
+                        }
                         bikeStatus = bikeStatus.copy(assistMode = newAssistMode)
-                        publishMqtt(mqttSetup.Topic + "/assistmode", newAssistMode.toString());
                         parsedInfo.add("⚡ Assist Mode: ${getAssistModeName(newAssistMode)}")
   //                      updateEbikeAssistModeCharacteristic()
                     }
@@ -1022,7 +1050,9 @@ class MainActivity : ComponentActivity() {
                         // total driven distance in km - use value directly
                         val newtotalDist = message.value/1000.0
                         bikeStatus = bikeStatus.copy(totalDist = newtotalDist)
-                        publishMqtt(mqttSetup.Topic + "/totaldistance", newtotalDist.toString());
+                        if(newtotalDist > 0.0) {
+                            publishMqtt(mqttSetup.Topic + "/totaldistance", newtotalDist.toString())
+                        }
 
                         parsedInfo.add("⚡ Total Distance: ${newtotalDist}km")
                         //                      updateEbikeAssistModeCharacteristic()
@@ -1031,7 +1061,12 @@ class MainActivity : ComponentActivity() {
                         // total supplied Energy from battery (kWh)
                         val newtotalBattery= message.value/1000.0
                         bikeStatus = bikeStatus.copy(totalBattery = newtotalBattery)
-                        publishMqtt(mqttSetup.Topic + "/totalbattery", newtotalBattery.toString());
+                        if(newtotalBattery > 0.0) {
+                            publishMqtt(
+                                mqttSetup.Topic + "/totalbattery",
+                                newtotalBattery.toString()
+                            )
+                        }
                         parsedInfo.add("⚡ Total Distance: ${newtotalBattery}%")
                         //                      updateEbikeAssistModeCharacteristic()
                     }
@@ -1184,8 +1219,12 @@ class MainActivity : ComponentActivity() {
             super.onConnectionStateChange(device, status, newState)
             val deviceAddress = device?.address ?: "unknown"
             if (newState == BluetoothProfile.STATE_CONNECTED) {
+                bleStatus = BleStatus.CONNECTED
+                publishMqtt(mqttSetup.Topic + "/blestatus", "connected");
                 Log.d("GATT_SERVER", "Device connected to GATT server: $deviceAddress")
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                bleStatus = BleStatus.DISCONNECTED
+                publishMqtt(mqttSetup.Topic + "/blestatus", "disconnected");
                 Log.d("GATT_SERVER", "Device disconnected from GATT server: $deviceAddress")
             }
         }
